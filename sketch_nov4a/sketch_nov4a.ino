@@ -318,8 +318,8 @@ float force()  {
   float back = (newfoot[3] + newfoot[4]) / 2;
   
   // Moment arm lengths [cm]
-  float flen = 15.0;  // Front sensor distance from pivot
-  float blen = 7.5;   // Back sensor distance from pivot
+  float flen = 11.0;  // Front sensor distance from pivot
+  float blen = 7.0;   // Back sensor distance from pivot
   
   // Calculate net moment and normalize by total lever arm
   // Positive = front-loaded, Negative = back-loaded
