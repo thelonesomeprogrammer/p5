@@ -1,160 +1,375 @@
+/*
+ * Admittance-Controlled Robotic Foot System
+ * 
+ * This system implements cascaded admittance and PID control for a robotic foot
+ * with force sensors. The foot measures forces and adjusts its position using
+ * a virtual mass-spring-damper model (admittance control) followed by PID
+ * position tracking.
+ */
+
+// ============================================================================
+// Data Structures
+// ============================================================================
+
+/**
+ * PID Controller Structure
+ * Implements a discrete-time PID controller with anti-windup
+ */
 typedef struct  {
-  float kp;
-  float ki;
-  float kd;
-  float integral;
-  float last_error;
-  float output;
-} pid;
+  float kp;          // Proportional gain
+  float ki;          // Integral gain
+  float kd;          // Derivative gain
+  float integral;    // Accumulated integral term
+  float last_error;  // Previous error for derivative calculation
+} pid_t;
 
+/**
+ * Admittance Controller Structure
+ * Implements a virtual mass-spring-damper (MSD) system that generates
+ * desired positions based on measured forces
+ */
 typedef struct  {
-  float k;
-  float c;
-  float m;
-  float last_pos;
-  float last_vel;
-  float output;
-} admittance;
+  float k;         // Spring stiffness [N/m]
+  float c;         // Damping coefficient [N·s/m]
+  float m;         // Virtual mass [kg]
+  float last_pos;  // Previous position for velocity estimation [rad]
+  float last_vel;  // Previous velocity for acceleration estimation [rad/s]
+} admittance_t;
 
-admittance m_msd;
+// ============================================================================
+// Global Variables
+// ============================================================================
 
-float des;
-int speed;
-int p;
-pid m_pid;
+// Controller instances
+admittance_t m_msd;  // Admittance controller (outer loop)
+pid_t pid;           // PID controller (inner loop)
 
-int apins[] = {A1, A2, A3, A4, A5, A6, A7, A8, A9, A10}; 
-float basefoot[] = {0.0, 0.0, 0.0, 0.0, 0.0};
-float newfoot[]  = {0.0, 0.0, 0.0, 0.0, 0.0};
+// System state variables
+float des;                      // Desired position
+int speed;                      // Motor PWM speed command [-255, 255]
+long unsigned previousMillis;   // Last loop timestamp for dt calculation
+int p;                          // Counter for periodic logging
+
+// Sensor configuration
+int apins[] = {A1, A2, A3, A4, A5, A6, A7, A8, A9, A10};  // 10 analog pins for 5 sensor pairs
+
+// Force sensor data
+float basefoot[] = {0.0, 0.0, 0.0, 0.0, 0.0};  // Baseline readings for 5 sensor pairs (tared values)
+float newfoot[]  = {0.0, 0.0, 0.0, 0.0, 0.0};  // Current force readings for 5 sensor pairs [N]
+
+// Moving average filter for force sensors
+float moveavg[5][31] = {0};  // Circular buffer for each sensor pair (31 samples)
+int moveavg_idx[5] = {0};    // Current index in circular buffer for each pair
+float moveavg_sum[5] = {0};  // Running sum for efficient average calculation
+
+// ============================================================================
+// Setup Function
+// ============================================================================
 
 void setup() {
-  // put your setup code here, to run once:
+  // Initialize serial communication for debugging
   Serial.begin(9600);
 
-  pinMode(A0, INPUT);
-
-  pinMode(A1, INPUT);
-  pinMode(A2, INPUT);
-  pinMode(A3, INPUT);
-  pinMode(A4, INPUT);
-  pinMode(A5, INPUT);
-  pinMode(A6, INPUT);
-  pinMode(A7, INPUT);
-  pinMode(A8, INPUT);
-  pinMode(A9, INPUT);
-  pinMode(A10, INPUT);
+  // Configure analog input pins
+  pinMode(A0, INPUT);   // Position sensor (potentiometer or encoder)
   
+  // Force sensor pairs (differential measurements)
+  pinMode(A1, INPUT);   // Pair 0 - Left
+  pinMode(A2, INPUT);   // Pair 0 - Right
+  pinMode(A3, INPUT);   // Pair 1 - Left
+  pinMode(A4, INPUT);   // Pair 1 - Right
+  pinMode(A5, INPUT);   // Pair 2 - Left
+  pinMode(A6, INPUT);   // Pair 2 - Right
+  pinMode(A7, INPUT);   // Pair 3 - Left
+  pinMode(A8, INPUT);   // Pair 3 - Right
+  pinMode(A9, INPUT);   // Pair 4 - Left
+  pinMode(A10, INPUT);  // Pair 4 - Right
+  
+  // Configure motor control pins (H-bridge PWM)
+  pinMode(8, OUTPUT);   // Motor direction A
+  pinMode(9, OUTPUT);   // Motor direction B
 
-  pinMode(8,OUTPUT);
-  pinMode(9,OUTPUT);
+  // Initialize PID controller gains
+  // Tuned for position tracking with reasonable response
+  m_pid.kp = 130;                    // Proportional gain
+  m_pid.ki = 0.135 * m_pid.kp;       // Integral gain (13.5% of Kp)
+  m_pid.kd = 1.3 * m_pid.kp;         // Derivative gain (130% of Kp for damping)
+  m_pid.integral = 0.0;              // Clear integral accumulator
+  m_pid.last_error = 0.0;            // Initialize error history
 
-  m_pid.kp = 130; // 130
-  m_pid.ki = 0.135*m_pid.kp; // 0.135
-  m_pid.kd = 1.3*m_pid.kp; // 1.3
-  m_pid.integral = 0.0;
-  m_pid.last_error = 0.0;
-  m_pid.output = 0.0;
+  // Initialize admittance controller parameters
+  // These define the virtual mechanical impedance of the system
+  m_msd.k = 0.5;                                    // Low stiffness for compliant behavior
+  m_msd.c = 5;                                      // Moderate damping
+  m_msd.m = 10;                                     // Virtual inertia
+  m_msd.last_pos = analogRead(A0) * 0.005 + 0.0565;  // Initialize with current position
+  m_msd.last_vel = 0;                               // Start at rest
 
-  m_msd.k = 0;
-  m_msd.c = 0;
-  m_msd.m = 0;
-  m_msd.last_pos = analogRead(A0)*0.005+0.0565;
-  m_msd.last_vel = 0;
-  m_msd.output = 0;
-
-  for (int i = 0; i < 5; i++){
+  // Tare force sensors - record baseline readings with no applied force
+  // Fill moving average buffers with initial readings
+  for (int i = 0; i < 31; i++){
+    for (int j = 0; j < 5; j++) {
+      read_weat(j)
+    }
+  }
+  // Store baseline values
+  for (int i = 0; i < 5; i++) {
     basefoot[i] = read_weat(i);
   }
+
+  // Initialize timing and logging
+  p = 0;
+  previousMillis = millis();
 }
 
+// ============================================================================
+// Main Control Loop
+// ============================================================================
+
 void loop() {
-  for (int i = 0; i < 5; i++){
-    newfoot[i] = read_weat(i);
-  }
-  
+  // Read current position from potentiometer/encoder
   int read = analogRead(A0);
+  
+  // Safety check: stop motor if position is out of valid range
+  // Prevents damage if sensor disconnects or reaches mechanical limits
   if (read > 400 || read < 70) {
     speed = 0;
   } else {
-    float rad = read*0.005+0.0565;
-    float err = des - rad;
-    pidstep(&m_pid, err, 0.1);
-    speed = m_pid.output;
-    if (p > 500 ){
-      p = 0;
-      Serial.print("top: ");
-      Serial.print(newfoot[0]);
-      Serial.print(", ");
-      Serial.print(newfoot[1]);
-      Serial.print(", ");
-      Serial.print(newfoot[2]);
-      Serial.print("; but: ");
-      Serial.print(newfoot[3]);
-      Serial.print(", ");
-      Serial.print(newfoot[4]);
-      Serial.print("; rad: ");
-      Serial.print(rad);
-      Serial.print("; ");
-      Serial.print(err);
-      Serial.print("; integral: ");
-      Serial.print(m_pid.integral);
-      Serial.print("; con: ");
-      Serial.println(speed);
+    // Convert ADC reading to physical position (radians)
+    // Formula: position = read * 0.005 + 0.0565
+    float rad = read * 0.005 + 0.0565;
+
+    // Read all force sensors (5 pairs, 10 sensors total)
+    for (int i = 0; i < 5; i++) {
+      newfoot[i] = read_weat(i);
     }
-    if (speed > 30){
-      speed = 30;
-    } else if (speed < -30) {
-      speed = -30;
-    }
-    p++;
+
+    // Calculate time step for discrete control
+    unsigned long currentMillis = millis();
+    float dt = (currentMillis - previousMillis) / 1000.0;  // Convert to seconds
+    previousMillis = currentMillis;
+
+    // Control cascade:
+    // 1. Calculate net torque/force from sensor readings
+    float f = force();
+    
+    // 2. Admittance control: force -> desired position
+    //    Virtual MSD system generates compliant response to external forces
+    float output = admittance(f, rad, dt);
+    des += output;  // Update desired position
+    
+    // 3. PID control: position error -> motor command
+    //    Tracks the desired position
+    speed = pidstep(&pid, des, dt);
+    
+    // Log data periodically for debugging/tuning
+    log(rad, output);
+    
+    // Limit motor speed to safe range
+    speed = constrain(speed, -30, 30);
   }
-  if (speed == 0){
-    analogWrite(8,0);
-    analogWrite(9,0);
-  } else if (speed < 0 ){
-    analogWrite(9,abs(speed));
-    analogWrite(8,0);
+  
+  // Apply motor command via H-bridge
+  // PWM on pins 8 and 9 controls direction and speed
+  if (speed == 0) {
+    // Brake: both outputs low
+    analogWrite(8, 0);
+    analogWrite(9, 0);
+  } else if (speed < 0) {
+    // Reverse: drive pin 9, pin 8 low
+    analogWrite(9, abs(speed));
+    analogWrite(8, 0);
   } else {
-    analogWrite(9,0);
-    analogWrite(8,abs(speed));
+    // Forward: drive pin 8, pin 9 low
+    analogWrite(9, 0);
+    analogWrite(8, abs(speed));
   }
 }
 
-void pidstep(pid *m_pid, float error, float dt) {
-  m_pid->integral += error * dt;
-  if (m_pid->integral > 0.5){
-    m_pid->integral = 0.5;
-  } else if (m_pid->integral < -0.5) {
-    m_pid->integral = -0.5;
-  }
+// ============================================================================
+// PID Controller
+// ============================================================================
 
-  float derivative = (error - m_pid->last_error) / dt;
+/**
+ * Execute one PID control step
+ * 
+ * @param m_pid  Pointer to PID controller structure
+ * @param error  Position error (desired - actual)
+ * @param dt     Time step in seconds
+ * 
+ * Implements the discrete PID equation:
+ * u(t) = Kp*e(t) + Ki*∫e(τ)dτ + Kd*de(t)/dt
+ *
+ * @return       Control output (motor command)
+ */
+float pidstep(float error, float dt) {
+  // Integrate error over time
+  pid.integral += error * dt;
+  
+  // Anti-windup: clamp integral to prevent excessive buildup
+  pid.integral = constrain(pid.integral, -0.5, 0.5);
 
-  m_pid->output = m_pid->kp * error + m_pid->ki * m_pid->integral + m_pid->kd * derivative;
+  // Calculate derivative (rate of change of error)
+  float derivative = (error - pid.last_error) / dt;
 
-  m_pid->last_error = error;
+  // Store error for next derivative calculation
+  pid.last_error = error;
+
+  // Compute PID output: proportional + integral + derivative terms
+  return pid.kp * error + pid.ki * pid.integral + pid.kd * derivative;
 }
 
+// ============================================================================
+// Force Sensor Reading
+// ============================================================================
+
+/**
+ * Read and process force from a sensor pair
+ * 
+ * Each "pair" consists of two Wheatstone bridge sensors in a differential
+ * configuration. This provides better noise rejection and sensitivity.
+ * 
+ * @param pair  Sensor pair index (0-4)
+ * @return      Filtered force reading in Newtons
+ */
 float read_weat(int pair) {
-  int read = analogRead(apins[pair *2]);
-  int read2 = analogRead(apins[pair *2 + 1]);
+  // Read both sensors in the differential pair
+  int read = analogRead(apins[pair * 2]);        // Left sensor
+  int read2 = analogRead(apins[pair * 2 + 1]);   // Right sensor
 
-    // convert to volts
+  // Convert ADC values to voltages (10-bit ADC, 5V reference)
   float Vleft = read * (5.0 / 1023.0);
   float Vright = read2 * (5.0 / 1023.0);
 
+  // Differential measurement for increased sensitivity
   float Vdiff = Vleft - Vright;  
 
-  const float a = -15.0;
-  const float offset = 0.0;
+  // Convert voltage difference to force using calibration
+  const float a = -15.0;      // Calibration slope [N/V]
+  const float offset = 0.0;   // Zero-force voltage offset
   float N = a * (Vdiff - offset);
-  return abs(N - basefoot[pair]);
+  
+  // Subtract baseline (tare) to get relative force
+  float current = basefoot[pair] - N;
+  
+  // Apply moving average filter (31-sample window) for noise reduction
+  // This uses a circular buffer for efficient O(1) updates
+  moveavg_sum[pair] -= moveavg[pair][moveavg_idx[pair]];  // Remove oldest sample
+  moveavg[pair][moveavg_idx[pair]] = current;             // Add new sample
+  moveavg_sum[pair] += current;                           // Update running sum
+  moveavg_idx[pair] = (moveavg_idx[pair] + 1) % 31;       // Advance circular index
+  
+  return moveavg_sum[pair] / 31.0;  // Return filtered average
+}
+
+// ============================================================================
+// Admittance Controller
+// ============================================================================
+
+/**
+ * Admittance control: computes desired position from measured force
+ * 
+ * Implements a virtual mass-spring-damper system:
+ * m*ẍ + c*ẋ + k*x = F_external
+ * 
+ * Solving for desired position:
+ * x_desired = (F - c*ẋ - m*ẍ) / k
+ * 
+ * @param force  External force measured by sensors [N]
+ * @param pos    Current position [m or rad]
+ * @param dt     Time step [s]
+ *
+ * @return       Desired position [rad]
+ */
+float admittance(float force, float pos, float dt) {
+  // Estimate velocity from position derivative
+  float vel = (pos - m_msd.last_pos) / dt;
+  
+  // Estimate acceleration from velocity derivative
+  float acc = (vel - m_msd.last_vel) / dt;
+  
+  // Update state history for next iteration
+  m_msd.last_pos = pos;
+  m_msd.last_vel = vel;
+
+  // Calculate desired position using admittance equation
+  // This creates a compliant response to external forces
+  return (-m_msd.c * vel - m_msd.m * acc + force) / m_msd.k;
 
 }
-void admittance (float force , float pos) {
-  float vel = m_msd.last_pos - pos;
-  float acc = m_msd.last_vel - vel;
-  m_msd.output = (-m_msd.c*vel-m_msd.m*acc + force)/m_msd.k;
-  return 
+
+// ============================================================================
+// Force Calculation
+// ============================================================================
+
+/**
+ * Calculate net torque/force from all sensors
+ * 
+ * Computes a weighted moment about the foot's pivot point.
+ * Front sensors (0-2) and back sensors (3-4) create opposing torques.
+ * 
+ * @return  Net torque or normalized force
+ */
+float force()  {
+  // Average force from front sensors (3 sensors)
+  float front = (newfoot[0] + newfoot[1] + newfoot[2]) / 3;
   
+  // Average force from back sensors (2 sensors)
+  float back = (newfoot[3] + newfoot[4]) / 2;
+  
+  // Moment arm lengths [cm]
+  float flen = 15.0;  // Front sensor distance from pivot
+  float blen = 7.5;   // Back sensor distance from pivot
+  
+  // Calculate net moment and normalize by total lever arm
+  // Positive = front-loaded, Negative = back-loaded
+  return (front * flen - back * blen) / (flen + blen);
+}
+
+// ============================================================================
+// Debug Logging
+// ============================================================================
+
+/**
+ * Periodically log system state for debugging and tuning
+ * 
+ * Prints every ~500 loop iterations to avoid overwhelming serial buffer
+ * 
+ * @param output  Admittance controller output
+ * @param rad    Current position [rad]
+ */
+void log(float rad, float output) {
+  // Only log every 500 iterations to reduce serial bandwidth
+  if (p > 500) {
+    p = 0;
+    
+    // Print sensor readings
+    Serial.print("top: ");      // Front sensors
+    Serial.print(newfoot[0]);
+    Serial.print(", ");
+    Serial.print(newfoot[1]);
+    Serial.print(", ");
+    Serial.print(newfoot[2]);
+    Serial.print("; but: ");    // Back sensors ("butt" / rear)
+    Serial.print(newfoot[3]);
+    Serial.print(", ");
+    Serial.print(newfoot[4]);
+    
+    // Print position
+    Serial.print("; rad: ");
+    Serial.print(rad);
+    
+    // Print admittance controller output
+    Serial.print("; msd out: ");
+    Serial.print(output);       // Desired position from admittance control
+    
+    // Print PID state
+    Serial.print("; integral: ");
+    Serial.print(m_pid.integral);
+    
+    // Print final motor command
+    Serial.print("; con: ");
+    Serial.println(speed);
+  }
+  p++;  // Increment logging counter
 }
