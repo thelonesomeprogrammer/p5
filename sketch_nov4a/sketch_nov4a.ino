@@ -91,11 +91,11 @@ void setup() {
 
   // Initialize PID controller gains
   // Tuned for position tracking with reasonable response
-  m_pid.kp = 130;                    // Proportional gain
-  m_pid.ki = 0.135 * m_pid.kp;       // Integral gain (13.5% of Kp)
-  m_pid.kd = 1.3 * m_pid.kp;         // Derivative gain (130% of Kp for damping)
-  m_pid.integral = 0.0;              // Clear integral accumulator
-  m_pid.last_error = 0.0;            // Initialize error history
+  pid.kp = 130;                    // Proportional gain
+  pid.ki = 0.135 * pid.kp;       // Integral gain (13.5% of Kp)
+  pid.kd = 1.3 * pid.kp;         // Derivative gain (130% of Kp for damping)
+  pid.integral = 0.0;              // Clear integral accumulator
+  pid.last_error = 0.0;            // Initialize error history
 
   // Initialize admittance controller parameters
   // These define the virtual mechanical impedance of the system
@@ -109,7 +109,7 @@ void setup() {
   // Fill moving average buffers with initial readings
   for (int i = 0; i < 31; i++){
     for (int j = 0; j < 5; j++) {
-      read_weat(j)
+      read_weat(j);
     }
   }
   // Store baseline values
@@ -160,7 +160,7 @@ void loop() {
     
     // 3. PID control: position error -> motor command
     //    Tracks the desired position
-    speed = pidstep(&pid, des, dt);
+    speed = pidstep(des, dt);
     
     // Log data periodically for debugging/tuning
     log(rad, output);
@@ -276,7 +276,7 @@ float read_weat(int pair) {
  * x_desired = (F - c*ẋ - m*ẍ) / k
  * 
  * @param force  External force measured by sensors [N]
- * @param pos    Current position [m or rad]
+ * @param pos    Current position [rad]
  * @param dt     Time step [s]
  *
  * @return       Desired position [rad]
@@ -365,7 +365,7 @@ void log(float rad, float output) {
     
     // Print PID state
     Serial.print("; integral: ");
-    Serial.print(m_pid.integral);
+    Serial.print(pid.integral);
     
     // Print final motor command
     Serial.print("; con: ");
