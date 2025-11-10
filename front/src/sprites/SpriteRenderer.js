@@ -25,26 +25,7 @@ export class SpriteRenderer {
     this.ctx.drawImage(sprite, x, y, size, size);
   }
 
-  // Render a grid-based sprite (coordinates in grid units)
-  drawSpriteGrid(spriteName, gridX, gridY, scale = this.scale) {
-    const pixelX = gridX * SPRITE_SIZE * scale;
-    const pixelY = gridY * SPRITE_SIZE * scale;
-    this.drawSprite(spriteName, pixelX, pixelY, scale);
-  }
 
-  // Fill an area with a repeating sprite pattern
-  fillArea(spriteName, x, y, width, height, scale = this.scale) {
-    const spriteSize = SPRITE_SIZE * scale;
-    const sprite = this.spriteSheet.getSprite(spriteName);
-
-    if (!sprite) return;
-
-    for (let py = y; py < y + height; py += spriteSize) {
-      for (let px = x; px < x + width; px += spriteSize) {
-        this.ctx.drawImage(sprite, px, py, spriteSize, spriteSize);
-      }
-    }
-  }
 
   // Set canvas size
   setSize(width, height) {

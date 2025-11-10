@@ -94,28 +94,6 @@ const GameCanvas = () => {
 		renderPlayer();
 	};
 
-	// Helper function to get distance to nearest water
-	const getDistanceToWater = (x, y) => {
-		if (gameState.isWater(x, y)) return 0;
-
-		// Check immediate neighbors first
-		for (let dx = -1; dx <= 1; dx++) {
-			for (let dy = -1; dy <= 1; dy++) {
-				if (dx === 0 && dy === 0) continue;
-				if (gameState.isWater(x + dx, y + dy)) return 1;
-			}
-		}
-
-		// Check one tile further
-		for (let dx = -2; dx <= 2; dx++) {
-			for (let dy = -2; dy <= 2; dy++) {
-				if (Math.abs(dx) < 2 && Math.abs(dy) < 2) continue;
-				if (gameState.isWater(x + dx, y + dy)) return 2;
-			}
-		}
-
-		return 3; // Far from water
-	};
 
 	const renderTerrain = () => {
 		const tileSize = 32; // 16px * 2 scale

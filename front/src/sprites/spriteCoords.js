@@ -9,7 +9,7 @@ export const SPRITE_COORDS = {
 	// Water tiles
 	WATER_1: { x: 0, y: 0 },
 	WATER_2: { x: 1, y: 0 },
-	WATER_3: { x: 3, y: 1 }, // Original coordinates (but not used in rendering)
+	WATER_3: { x: 3, y: 1 },
 
 	// Water corners (outer)
 	WATER_CORNER_OUT_BOTTOM_RIGHT: { x: 0, y: 1 },
@@ -37,12 +37,6 @@ export const SPRITE_COORDS = {
 	PLAYER: { x: 25, y: 0 },
 };
 
-// Convert grid coordinates to pixel coordinates
-export const gridToPixel = (gridX, gridY) => ({
-	x: gridX * SPRITE_STRIDE,
-	y: gridY * SPRITE_STRIDE,
-});
-
 // Get pixel coordinates for a sprite
 export const getSpritePixelCoords = (spriteName) => {
 	const coords = SPRITE_COORDS[spriteName];
@@ -50,6 +44,9 @@ export const getSpritePixelCoords = (spriteName) => {
 		console.warn(`Sprite ${spriteName} not found`);
 		return { x: 0, y: 0 };
 	}
-	return gridToPixel(coords.x, coords.y);
+	return {
+		x: coords.x * SPRITE_STRIDE,
+		y: coords.y * SPRITE_STRIDE,
+	};
 };
 

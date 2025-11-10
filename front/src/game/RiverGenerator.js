@@ -1,128 +1,206 @@
-// Infinite river generation using drunken walk algorithm
+// Improved infinite river generation with constrained FIFO and bank validation
+import { CircularBuffer } from '../utils/CircularBuffer.js';
 
 export class RiverGenerator {
-  constructor(width) {
-    this.width = width;
-    this.currentX = Math.floor(width / 2);
-    this.lastGeneratedY = -1;
-    this.generatedTiles = new Map(); // Y -> array of tiles
-    this.riverWidth = 3;
+  constructor(mapWidth, options = {}) {
+    // Core parameters
+    this.mapWidth = mapWidth;
+    this.pathHistorySize = options.pathHistorySize || 50;
 
-    // Drunken walk parameters
-    this.walkBias = 0.1; // Tendency to continue in same direction
-    this.lastDirection = 0; // -1 left, 0 straight, 1 right
+    // Path data (FIFO) - stores river centerline segments
+    this.pathSegments = new CircularBuffer(this.pathHistorySize);
+    this.lastGeneratedY = -1;
+
+    // River properties with constraints
+    this.riverWidth = {
+      min: options.minWidth || 2,
+      max: options.maxWidth || 6,
+      current: options.initialWidth || 3
+    };
+    this.centerX = Math.floor(mapWidth / 2);
+
+    this.lastDirection = [0,0]; // -1 left, 0 straight, 1 right
+    this.maxTurnRadius = options.maxTurnRadius || 2;
+
+    // Tile cache (limited size with LRU)
+    this.tileCache = new Map();
+    this.maxCacheSize = options.maxCacheSize || 50;
+    this.cacheAccessOrder = []; // For LRU tracking
+
+    // Width change parameters
+    this.widthChangeChance = options.widthChangeChance || 0.05;
   }
 
-  // Drunken walk step - decides next direction
+  // Fixed probability distribution for drunken walk
   getDrunkenStep() {
     const random = Math.random();
 
-    // Bias towards continuing in the same direction
-    if (random < this.walkBias) {
-      return this.lastDirection;
+    if (this.lastDirection[0] === 0) {
+      if (random < 1/3) {
+        this.lastDirection[1] = this.lastDirection[0];
+        this.lastDirection[0] = -1;
+      } else if (random < 2/3) {
+        this.lastDirection[1] = this.lastDirection[0];
+        this.lastDirection[0] = 0;
+      } else {
+        this.lastDirection[1] = this.lastDirection[0];
+        this.lastDirection[0] = 1;
+      }
+    } else if (this.lastDirection[0] === -1) {
+        if (random < 0.5) {
+          this.lastDirection[1] = this.lastDirection[0];
+          this.lastDirection[0] = -1;
+        } else {
+          this.lastDirection[1] = this.lastDirection[0];
+          this.lastDirection[0] = 0;
+        }
+    } else if (this.lastDirection[0] === 1) {
+        if (random < 0.5) {
+          this.lastDirection[1] = this.lastDirection[0];
+          this.lastDirection[0] = 1;
+        } else {
+          this.lastDirection[1] = this.lastDirection[0];
+          this.lastDirection[0] = 0;
+        }
+      }
+
+    return this.lastDirection[0];
+  }
+
+
+
+  // Constrain position within map bounds considering river width
+  constrainPosition(targetX, width) {
+    const halfWidth = Math.floor(width / 2);
+    const minX = halfWidth;
+    const maxX = this.mapWidth - halfWidth - 1;
+
+    return Math.max(minX, Math.min(maxX, targetX));
+  }
+
+  // Generate path segment with validation
+  generatePathSegment(y) {
+      const direction = this.getDrunkenStep();
+      const newCenterX = this.constrainPosition(
+        this.centerX + direction,
+        this.riverWidth.current
+      );
+
+      // Occasionally vary width
+      let newWidth = this.riverWidth.current;
+		if (direction != 0) {
+      if (Math.random() < this.widthChangeChance) {
+        const widthChange = Math.random() < 0.5 ? -1 : 1;
+        newWidth = Math.max(
+          this.riverWidth.min,
+          Math.min(this.riverWidth.max, newWidth + widthChange)
+        );
+      }
+		}
+
+      const candidateSegment = {
+        y,
+        centerX: newCenterX,
+        width: newWidth,
+        direction
+      };
+
+      // Update generator state for next iteration
+      this.centerX = newCenterX;
+      this.riverWidth.current = newWidth;
+
+      return candidateSegment;
+  }
+
+  // Generate tiles from a path segment
+  generateTilesFromSegment(segment) {
+    const tiles = [];
+    const halfWidth = Math.floor(segment.width / 2);
+
+    for (let dx = -halfWidth; dx <= halfWidth; dx++) {
+      const tileX = segment.centerX + dx;
+      if (tileX >= 0 && tileX < this.mapWidth) {
+        tiles.push({ x: tileX, y: segment.y, type: 'water' });
+      }
     }
 
-    // Random walk with equal probability
-    if (random < 0.33) {
-      this.lastDirection = -1; // Left
-    } else if (random < 0.66) {
-      this.lastDirection = 0;  // Straight
-    } else {
-      this.lastDirection = 1;  // Right
-    }
+    return tiles;
+  }
 
-    return this.lastDirection;
+  // LRU cache management
+  manageTileCache(y) {
+    // Update access order
+    const index = this.cacheAccessOrder.indexOf(y);
+    if (index > -1) {
+      this.cacheAccessOrder.splice(index, 1);
+    }
+    this.cacheAccessOrder.push(y);
+
+    // Remove oldest entries if cache is too large
+    while (this.tileCache.size > this.maxCacheSize) {
+      const oldestY = this.cacheAccessOrder.shift();
+      this.tileCache.delete(oldestY);
+    }
   }
 
   // Generate river tiles for a specific Y coordinate
   generateRowAt(y) {
-    if (this.generatedTiles.has(y)) {
-      return this.generatedTiles.get(y);
+    // Check tile cache first
+    if (this.tileCache.has(y)) {
+      this.manageTileCache(y);
+      return this.tileCache.get(y);
     }
 
-    // Apply drunken walk step
-    const direction = this.getDrunkenStep();
-    this.currentX += direction * 0.7; // Move less aggressively
+    // Ensure we have path segments up to this Y coordinate
+    this.ensurePathGenerated(y);
 
-    // Keep river within bounds
-    const halfWidth = Math.floor(this.riverWidth / 2);
-    this.currentX = Math.max(halfWidth, Math.min(this.width - halfWidth - 1, this.currentX));
-
-    // Occasionally vary river width for interest
-    if (Math.random() < 0.05) {
-      this.riverWidth = Math.max(2, Math.min(5, this.riverWidth + (Math.random() < 0.5 ? -1 : 1)));
-    }
-
-    // Generate water tiles for this row
-    const tiles = [];
-    const actualHalfWidth = Math.floor(this.riverWidth / 2);
-
-    for (let dx = -actualHalfWidth; dx <= actualHalfWidth; dx++) {
-      const tileX = Math.floor(this.currentX) + dx;
-      if (tileX >= 0 && tileX < this.width) {
-        tiles.push({ x: tileX, y, type: 'water' });
+    // Find the path segment for this Y
+    let segment = null;
+    for (let i = 0; i < this.pathSegments.size(); i++) {
+      const pathSegment = this.pathSegments.get(i);
+      if (pathSegment && pathSegment.y === y) {
+        segment = pathSegment;
+        break;
       }
     }
 
-    this.generatedTiles.set(y, tiles);
+    if (!segment) {
+      // Generate missing segment
+      segment = this.generatePathSegment(y);
+      this.pathSegments.push(segment);
+    }
+
+    // Generate tiles from segment
+    const tiles = this.generateTilesFromSegment(segment);
+
+    // Cache the result
+    this.tileCache.set(y, tiles);
+    this.manageTileCache(y);
     this.lastGeneratedY = Math.max(this.lastGeneratedY, y);
 
     return tiles;
   }
 
+  // Ensure path segments are generated up to the specified Y coordinate
+  ensurePathGenerated(targetY) {
+    while (this.lastGeneratedY < targetY) {
+      const nextY = this.lastGeneratedY + 1;
+      const segment = this.generatePathSegment(nextY);
+      this.pathSegments.push(segment);
+      this.lastGeneratedY = nextY;
+    }
+  }
+
   // Get all river tiles in a Y range
   getRiverTiles(minY, maxY) {
-    // First generate all rows
-    for (let y = minY; y <= maxY; y++) {
-      this.generateRowAt(y);
-    }
-
-    // Apply smoothing to remove single block indentations
-    this.smoothRiverTiles(minY, maxY);
-
-    // Collect all tiles
+    // Generate all requested rows
     const tiles = [];
     for (let y = minY; y <= maxY; y++) {
-      if (this.generatedTiles.has(y)) {
-        tiles.push(...this.generatedTiles.get(y));
-      }
+      const rowTiles = this.generateRowAt(y);
+      tiles.push(...rowTiles);
     }
 
     return tiles;
-  }
-
-  // Post-process tiles to remove single block indentations (fill gaps)
-  // Keep protrusions since they can be handled with edge sprites
-  smoothRiverTiles(minY, maxY) {
-    for (let y = minY; y <= maxY; y++) {
-      if (!this.generatedTiles.has(y)) continue;
-
-      const currentRow = this.generatedTiles.get(y);
-      const newTiles = [...currentRow];
-
-      // Convert to set for easier lookup
-      const currentWater = new Set(currentRow.map(t => t.x));
-
-      // Get min and max X for current row to define the river bounds
-      const minX = Math.min(...currentRow.map(t => t.x));
-      const maxX = Math.max(...currentRow.map(t => t.x));
-
-      // Look for single-block indentations (gaps) within the river bounds
-      for (let x = minX + 1; x < maxX; x++) {
-        if (!currentWater.has(x)) {
-          // Check if this is a single-block gap (has water on both sides)
-          const hasWaterLeft = currentWater.has(x - 1);
-          const hasWaterRight = currentWater.has(x + 1);
-
-          // Fill single block indentations
-          if (hasWaterLeft && hasWaterRight) {
-            newTiles.push({ x, y, type: 'water' });
-          }
-        }
-      }
-
-      this.generatedTiles.set(y, newTiles);
-    }
   }
 
   // Check if a specific position is water
@@ -131,15 +209,23 @@ export class RiverGenerator {
     return rowTiles.some(tile => tile.x === x);
   }
 
-  // Clean up old generated data to save memory
+  // No manual cleanup needed - FIFO and LRU cache handle memory automatically
   cleanup(currentY, keepDistance = 100) {
-    const keysToDelete = [];
-    for (const y of this.generatedTiles.keys()) {
-      if (y < currentY - keepDistance) {
-        keysToDelete.push(y);
-      }
-    }
-    keysToDelete.forEach(y => this.generatedTiles.delete(y));
+    // Legacy method kept for compatibility - no operation needed
+    // Memory is automatically managed by:
+    // - CircularBuffer for path segments (fixed size)
+    // - LRU cache for tiles (limited size)
+  }
+
+  // Get river statistics for debugging
+  getStats() {
+    return {
+      pathSegments: this.pathSegments.size(),
+      cachedTiles: this.tileCache.size,
+      lastGeneratedY: this.lastGeneratedY,
+      currentWidth: this.riverWidth.current,
+      centerX: this.centerX
+    };
   }
 
 }

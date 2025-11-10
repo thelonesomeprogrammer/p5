@@ -16,7 +16,17 @@ export class GameState {
 
 		this.river = {
 			width: 20,
-			generator: new RiverGenerator(20),
+			generator: new RiverGenerator(20, {
+				pathHistorySize: 200,
+				maxCacheSize: 50,
+				minWidth: 2,
+				maxWidth: 6,
+				initialWidth: 3,
+				walkBias: 0.1,
+				validateBanks: true,
+				maxGenerationAttempts: 5,
+				widthChangeChance: 0.05
+			}),
 		};
 
 		this.viewport = {
@@ -61,7 +71,6 @@ export class GameState {
 			this.player.visualX = this.player.x;
 			this.player.visualY = this.player.y;
 		}
-		this.updateViewport();
 	}
 
 	// Check if a position is water
@@ -160,36 +169,8 @@ export class GameState {
 		return false;
 	}
 
-	// Update viewport to center on player (now handled in update() for smooth movement)
-	updateViewport() {
-		// Viewport smoothing is now handled in update() method
-		// This method kept for compatibility but logic moved to update()
-	}
 
-	// Get visible river tiles for rendering
-	getVisibleRiverTiles() {
-		const tileSize = 32;
-		const minY = Math.floor((this.viewport.y - tileSize) / tileSize);
-		const maxY = Math.floor(
-			(this.viewport.y + this.viewport.height + tileSize) / tileSize,
-		);
 
-		return this.river.generator.getRiverTiles(minY, maxY);
-	}
-
-	// Convert backend u8 position data
-	updateFromBackend(positionData) {
-		// Assuming positionData is { x: u8, y: u8 }
-		// Scale to our grid system
-		const gridX = Math.floor((positionData.x / 255) * this.river.width);
-		const gridY = Math.floor((positionData.y / 255) * this.river.height);
-
-		if (this.isWater(gridX, gridY)) {
-			this.player.x = gridX;
-			this.player.y = gridY;
-			this.updateViewport();
-		}
-	}
 
 	// Get current game stats for display
 	getStats() {
@@ -236,8 +217,18 @@ export class GameState {
 		this.lastLoggedTime = -1;
 		this.gameOver = false;
 
-		// Reset river generator
-		this.river.generator = new RiverGenerator(this.river.width);
+		// Reset river generator with same configuration
+		this.river.generator = new RiverGenerator(this.river.width, {
+			pathHistorySize: 200,
+			maxCacheSize: 50,
+			minWidth: 2,
+			maxWidth: 6,
+			initialWidth: 3,
+			walkBias: 0.1,
+			validateBanks: true,
+			maxGenerationAttempts: 5,
+			widthChangeChance: 0.05
+		});
 
 		this.initializePlayer();
 	}
