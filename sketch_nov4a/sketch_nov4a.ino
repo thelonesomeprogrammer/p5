@@ -62,6 +62,11 @@ float moveavg[5][31] = {0};  // Circular buffer for each sensor pair (31 samples
 int moveavg_idx[5] = {0};    // Current index in circular buffer for each pair
 float moveavg_sum[5] = {0};  // Running sum for efficient average calculation
 
+// moving average for msd
+float msdavg_buf[10] = {0};
+int msdavg_idx = 0;
+float madavg_sum = 0;
+
 // ============================================================================
 // Setup Function
 // ============================================================================
@@ -100,8 +105,8 @@ void setup() {
   // Initialize admittance controller parameters
   // These define the virtual mechanical impedance of the system
   m_msd.k = 0.5;                                    // Low stiffness for compliant behavior
-  m_msd.c = 5;                                      // Moderate damping
-  m_msd.m = 10;                                     // Virtual inertia
+  m_msd.c = 10;                                      // Moderate damping
+  m_msd.m = 20;                                     // Virtual inertia
   m_msd.last_pos = analogRead(A0) * 0.005 + 0.0565;  // Initialize with current position
   m_msd.last_vel = 0;                               // Start at rest
 
@@ -145,9 +150,7 @@ void loop() {
     }
 
     // Calculate time step for discrete control
-    unsigned long currentMillis = millis();
-    float dt = (currentMillis - previousMillis) / 1000.0;  // Convert to seconds
-    previousMillis = currentMillis;
+    float dt = 0.1;
 
     // Control cascade:
     // 1. Calculate net torque/force from sensor readings
@@ -156,14 +159,18 @@ void loop() {
     // 2. Admittance control: force -> desired position
     //    Virtual MSD system generates compliant response to external forces
     float output = admittance(f, rad, dt);
-    des += output;  // Update desired position
+    madavg_sum -= msdavg_buf[msdavg_idx];      // Remove oldest sample
+    msdavg_buf[msdavg_idx] = output;           // Add new sample
+    madavg_sum += output;                      // Update running sum
+    msdavg_idx = (msdavg_idx + 1) % 10;         // Advance circular index
+    des = madavg_sum / 10.0;                    // Smoothed desired position
     
     // 3. PID control: position error -> motor command
     //    Tracks the desired position
     speed = pidstep(des, dt);
     
     // Log data periodically for debugging/tuning
-    log(rad, output);
+    log(rad);
     
     // Limit motor speed to safe range
     speed = constrain(speed, -30, 30);
@@ -250,7 +257,7 @@ float read_weat(int pair) {
   float N = a * (Vdiff - offset);
   
   // Subtract baseline (tare) to get relative force
-  float current = basefoot[pair] - N;
+  float current = N - basefoot[pair];
   
   // Apply moving average filter (31-sample window) for noise reduction
   // This uses a circular buffer for efficient O(1) updates
@@ -283,10 +290,18 @@ float read_weat(int pair) {
  */
 float admittance(float force, float pos, float dt) {
   // Estimate velocity from position derivative
-  float vel = (pos - m_msd.last_pos) / dt;
+  float vel = (pos - m_msd.last_pos);
   
   // Estimate acceleration from velocity derivative
-  float acc = (vel - m_msd.last_vel) / dt;
+  float acc = (vel - m_msd.last_vel);
+
+  if (p > 500) {
+        Serial.print("; vel: ");
+    Serial.print(vel);
+        Serial.print("; acc: ");
+    Serial.print(acc);
+  }
+
   
   // Update state history for next iteration
   m_msd.last_pos = pos;
@@ -295,7 +310,6 @@ float admittance(float force, float pos, float dt) {
   // Calculate desired position using admittance equation
   // This creates a compliant response to external forces
   return (-m_msd.c * vel - m_msd.m * acc + force) / m_msd.k;
-
 }
 
 // ============================================================================
@@ -338,7 +352,7 @@ float force()  {
  * @param output  Admittance controller output
  * @param rad    Current position [rad]
  */
-void log(float rad, float output) {
+void log(float rad) {
   // Only log every 500 iterations to reduce serial bandwidth
   if (p > 500) {
     p = 0;
@@ -354,14 +368,14 @@ void log(float rad, float output) {
     Serial.print(newfoot[3]);
     Serial.print(", ");
     Serial.print(newfoot[4]);
+
+    // print desiered
+    Serial.print("; des: ");
+    Serial.print(des);
     
     // Print position
     Serial.print("; rad: ");
     Serial.print(rad);
-    
-    // Print admittance controller output
-    Serial.print("; msd out: ");
-    Serial.print(output);       // Desired position from admittance control
     
     // Print PID state
     Serial.print("; integral: ");
