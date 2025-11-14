@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { SpriteSheet } from "../sprites/SpriteSheet.js";
 import { SpriteRenderer } from "../sprites/SpriteRenderer.js";
 import { GameState } from "./GameState.js";
+import { HardwareInputManager } from "../input/HardwareInputManager.js";
 
 const GameCanvas = () => {
 	const canvasRef = useRef(null);
@@ -17,8 +18,11 @@ const GameCanvas = () => {
 	const [showGameOver, setShowGameOver] = useState(false);
 	const [finalScore, setFinalScore] = useState({ distance: 0, speed: '1.2', time: 0 });
 	const [stats, setStats] = useState({ distance: 0, speed: '1.2', time: 0 });
+	const [hardwareInputManager] = useState(() => new HardwareInputManager());
+	const [hardwareStatus, setHardwareStatus] = useState({ connected: false, lastRadValue: 1.0 });
 	const animationFrameRef = useRef();
 	const lastTimeRef = useRef(0);
+	const lastHardwareMovement = useRef(0); // Track last movement direction to avoid spam
 
 	// Initialize sprite system
 	useEffect(() => {
@@ -268,7 +272,7 @@ const GameCanvas = () => {
 		return () => clearInterval(interval);
 	}, [gameState, showInstructions]);
 
-	// Handle keyboard input
+	// Handle keyboard input (fallback/override for hardware)
 	useEffect(() => {
 		const handleKeyPress = (event) => {
 			// If instructions are showing, any key starts the game
@@ -292,10 +296,12 @@ const GameCanvas = () => {
 			switch (event.key) {
 				case "ArrowLeft":
 				case "a":
+					console.log('[Keyboard] Move LEFT');
 					gameState.movePlayer(-1, 0);
 					break;
 				case "ArrowRight":
 				case "d":
+					console.log('[Keyboard] Move RIGHT');
 					gameState.movePlayer(1, 0);
 					break;
 			}
@@ -304,6 +310,74 @@ const GameCanvas = () => {
 		window.addEventListener("keydown", handleKeyPress);
 		return () => window.removeEventListener("keydown", handleKeyPress);
 	}, [gameState, showInstructions, showGameOver]);
+
+	// Handle hardware input from localhost:5000
+	useEffect(() => {
+		let pollInterval;
+		let lastMoveTime = 0;
+		const MOVE_DELAY = 200; // milliseconds between moves when held
+
+		const handleHardwareInput = async () => {
+			// Only poll during active gameplay (not during instructions or game over)
+			if (showInstructions || showGameOver) {
+				return;
+			}
+
+			try {
+				const radValue = await hardwareInputManager.fetchRadValue();
+
+				if (radValue !== null) {
+					// Update hardware status for UI
+					setHardwareStatus({
+						connected: true,
+						lastRadValue: radValue,
+					});
+
+					// Get movement direction from rad value
+					const direction = hardwareInputManager.getMovementDirection(radValue);
+
+					// Move continuously while held (with delay between moves)
+					const now = Date.now();
+					if (direction !== 0) {
+						// First move is instant, subsequent moves have delay
+						if (direction !== lastHardwareMovement.current || now - lastMoveTime > MOVE_DELAY) {
+							if (direction === -1) {
+								gameState.movePlayer(-1, 0);
+							} else if (direction === 1) {
+								gameState.movePlayer(1, 0);
+							}
+							lastHardwareMovement.current = direction;
+							lastMoveTime = now;
+						}
+					} else {
+						// Reset when centered
+						lastHardwareMovement.current = 0;
+					}
+				} else {
+					// Connection failed
+					setHardwareStatus({
+						connected: false,
+						lastRadValue: hardwareStatus.lastRadValue,
+					});
+				}
+			} catch (error) {
+				console.error('[Hardware] Polling error:', error);
+			}
+		};
+
+		// Start polling when game is active
+		if (!showInstructions && !showGameOver) {
+			console.log('[Hardware] Starting input polling at 60Hz');
+			pollInterval = setInterval(handleHardwareInput, 16); // ~60fps
+		}
+
+		return () => {
+			if (pollInterval) {
+				console.log('[Hardware] Stopping input polling');
+				clearInterval(pollInterval);
+			}
+		};
+	}, [hardwareInputManager, gameState, showInstructions, showGameOver, hardwareStatus.lastRadValue]);
 
 	return (
 		<div
@@ -344,6 +418,12 @@ const GameCanvas = () => {
 					<div>Distance: {stats.distance}</div>
 					<div>Speed: {stats.speed}</div>
 					<div>Time: {stats.time}s</div>
+					<div style={{ marginTop: "10px", borderTop: "1px solid rgba(255,255,255,0.3)", paddingTop: "10px" }}>
+						<div style={{ color: hardwareStatus.connected ? "#4ade80" : "#ef4444" }}>
+							Hardware: {hardwareStatus.connected ? "Connected" : "Disconnected"}
+						</div>
+						<div>Rad: {hardwareStatus.lastRadValue.toFixed(2)}</div>
+					</div>
 				</div>
 			)}
 

@@ -58,7 +58,7 @@ float basefoot[] = {0.0, 0.0, 0.0, 0.0, 0.0};  // Baseline readings for 5 sensor
 float newfoot[]  = {0.0, 0.0, 0.0, 0.0, 0.0};  // Current force readings for 5 sensor pairs [N]
 
 // Moving average filter for force sensors
-float moveavg[5][31] = {0};  // Circular buffer for each sensor pair (31 samples)
+float moveavg[5][50] = {0};  // Circular buffer for each sensor pair (50 samples)
 int moveavg_idx[5] = {0};    // Current index in circular buffer for each pair
 float moveavg_sum[5] = {0};  // Running sum for efficient average calculation
 
@@ -104,15 +104,15 @@ void setup() {
 
   // Initialize admittance controller parameters
   // These define the virtual mechanical impedance of the system
-  m_msd.k = 0.5;                                    // Low stiffness for compliant behavior
+  m_msd.k = 2;                                    // Low stiffness for compliant behavior
   m_msd.c = 10;                                      // Moderate damping
-  m_msd.m = 20;                                     // Virtual inertia
+  m_msd.m = 15;                                     // Virtual inertia
   m_msd.last_pos = analogRead(A0) * 0.005 + 0.0565;  // Initialize with current position
   m_msd.last_vel = 0;                               // Start at rest
 
   // Tare force sensors - record baseline readings with no applied force
   // Fill moving average buffers with initial readings
-  for (int i = 0; i < 31; i++){
+  for (int i = 0; i < 50; i++){
     for (int j = 0; j < 5; j++) {
       read_weat(j);
     }
@@ -174,6 +174,7 @@ void loop() {
     
     // Limit motor speed to safe range
     speed = constrain(speed, -30, 30);
+    if (speed > -15 && speed < 15){speed = 0;}
   }
   
   // Apply motor command via H-bridge
@@ -258,15 +259,19 @@ float read_weat(int pair) {
   
   // Subtract baseline (tare) to get relative force
   float current = N - basefoot[pair];
+  if (basefoot[pair] != 0.0) { 
+    current = constrain(current, -10, 10);
+    if (abs(current) < 0.20)  {current = 0.0;}
+  }
   
   // Apply moving average filter (31-sample window) for noise reduction
   // This uses a circular buffer for efficient O(1) updates
   moveavg_sum[pair] -= moveavg[pair][moveavg_idx[pair]];  // Remove oldest sample
   moveavg[pair][moveavg_idx[pair]] = current;             // Add new sample
   moveavg_sum[pair] += current;                           // Update running sum
-  moveavg_idx[pair] = (moveavg_idx[pair] + 1) % 31;       // Advance circular index
+  moveavg_idx[pair] = (moveavg_idx[pair] + 1) % 50;       // Advance circular index
   
-  return moveavg_sum[pair] / 31.0;  // Return filtered average
+  return moveavg_sum[pair] / 50.0;  // Return filtered average
 }
 
 // ============================================================================
