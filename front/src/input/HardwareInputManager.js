@@ -84,22 +84,20 @@ export class HardwareInputManager {
    */
   getMovementDirection(radValue) {
     // rad: 1.0 is center (±0.5 range)
-    // Map to left/center/right with deadzone
+    // Map to continuous movement value with deadzone
     const offset = radValue - 1.0; // Convert to -0.5 to +0.5 range
 
-    const leftThreshold = -0.15;  // Tilt left threshold
-    const rightThreshold = 0.15;  // Tilt right threshold
+    const deadzone = 0.05; // Small deadzone to prevent drift
 
-    if (offset < leftThreshold) {
-      console.log(`[Hardware] rad=${radValue.toFixed(2)} offset=${offset.toFixed(2)} → LEFT`);
-      return -1; // Move left
-    } else if (offset > rightThreshold) {
-      console.log(`[Hardware] rad=${radValue.toFixed(2)} offset=${offset.toFixed(2)} → RIGHT`);
-      return 1; // Move right
-    } else {
+    if (Math.abs(offset) < deadzone) {
       console.log(`[Hardware] rad=${radValue.toFixed(2)} offset=${offset.toFixed(2)} → CENTER (deadzone)`);
       return 0; // Center/no movement
     }
+
+    // Return continuous movement value (scaled by 2 for better responsiveness)
+    const movement = offset * -2;
+    console.log(`[Hardware] rad=${radValue.toFixed(2)} offset=${offset.toFixed(2)} → movement=${movement.toFixed(2)}`);
+    return movement;
   }
 
   /**

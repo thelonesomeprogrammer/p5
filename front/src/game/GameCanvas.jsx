@@ -23,6 +23,7 @@ const GameCanvas = () => {
 	const animationFrameRef = useRef();
 	const lastTimeRef = useRef(0);
 	const lastHardwareMovement = useRef(0); // Track last movement direction to avoid spam
+	const movementAccumulator = useRef(0); // Accumulate fractional movements
 
 	// Initialize sprite system
 	useEffect(() => {
@@ -278,6 +279,7 @@ const GameCanvas = () => {
 			// If instructions are showing, any key starts the game
 			if (showInstructions) {
 				setShowInstructions(false);
+				movementAccumulator.current = 0; // Reset accumulator on game start
 				console.log('Game started! Initial stats:', gameState.getStats());
 				setStats(gameState.getStats()); // Force immediate stats update
 				return;
@@ -286,24 +288,11 @@ const GameCanvas = () => {
 			// If game over is showing, any key restarts the game
 			if (showGameOver) {
 				gameState.resetGame();
+				movementAccumulator.current = 0; // Reset accumulator on restart
 				setShowGameOver(false);
 				setStats(gameState.getStats());
 				console.log('Game restarted!');
 				return;
-			}
-
-			// Only allow horizontal movement (left/right) during normal gameplay
-			switch (event.key) {
-				case "ArrowLeft":
-				case "a":
-					console.log('[Keyboard] Move LEFT');
-					gameState.movePlayer(-1, 0);
-					break;
-				case "ArrowRight":
-				case "d":
-					console.log('[Keyboard] Move RIGHT');
-					gameState.movePlayer(1, 0);
-					break;
 			}
 		};
 
@@ -314,8 +303,6 @@ const GameCanvas = () => {
 	// Handle hardware input from localhost:5000
 	useEffect(() => {
 		let pollInterval;
-		let lastMoveTime = 0;
-		const MOVE_DELAY = 200; // milliseconds between moves when held
 
 		const handleHardwareInput = async () => {
 			// Only poll during active gameplay (not during instructions or game over)
@@ -333,25 +320,27 @@ const GameCanvas = () => {
 						lastRadValue: radValue,
 					});
 
-					// Get movement direction from rad value
-					const direction = hardwareInputManager.getMovementDirection(radValue);
+					// Get continuous movement value from rad value
+					const movement = hardwareInputManager.getMovementDirection(radValue);
 
-					// Move continuously while held (with delay between moves)
-					const now = Date.now();
-					if (direction !== 0) {
-						// First move is instant, subsequent moves have delay
-						if (direction !== lastHardwareMovement.current || now - lastMoveTime > MOVE_DELAY) {
-							if (direction === -1) {
-								gameState.movePlayer(-1, 0);
-							} else if (direction === 1) {
-								gameState.movePlayer(1, 0);
-							}
-							lastHardwareMovement.current = direction;
-							lastMoveTime = now;
+					// Accumulate fractional movement
+					movementAccumulator.current += movement;
+
+					// When accumulated movement reaches ±1.0, move player one tile
+					while (Math.abs(movementAccumulator.current) >= 1.0) {
+						const direction = movementAccumulator.current > 0 ? 1 : -1;
+						const moved = gameState.movePlayer(direction, 0);
+
+						if (moved) {
+							// Successfully moved, subtract from accumulator
+							movementAccumulator.current -= direction;
+							console.log(`[Hardware] Moved ${direction > 0 ? 'RIGHT' : 'LEFT'}, accumulator now: ${movementAccumulator.current.toFixed(2)}`);
+						} else {
+							// Hit boundary or dirt, reset accumulator
+							movementAccumulator.current = 0;
+							console.log(`[Hardware] Movement blocked, accumulator reset`);
+							break;
 						}
-					} else {
-						// Reset when centered
-						lastHardwareMovement.current = 0;
 					}
 				} else {
 					// Connection failed
@@ -368,7 +357,7 @@ const GameCanvas = () => {
 		// Start polling when game is active
 		if (!showInstructions && !showGameOver) {
 			console.log('[Hardware] Starting input polling at 60Hz');
-			pollInterval = setInterval(handleHardwareInput, 16); // ~60fps
+			pollInterval = setInterval(handleHardwareInput, 5); // ~60fps
 		}
 
 		return () => {

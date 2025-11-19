@@ -8,6 +8,7 @@ class Serialmanager:
     def __init__(self, port='/dev/ttyACM0', baudrate=9600, timeout=1):
         self.ser = Serial(port, baudrate=baudrate, timeout=timeout)
         self.data = Queue(10)
+        self.last_line = ''
         self.thread = Thread(target=self.read_from_port)
         self.thread.daemon = True
         self.thread.start()
@@ -19,7 +20,9 @@ class Serialmanager:
                 self.data.put(line)
 
     def readline(self):
-        return self.data.get()
+        if not self.data.empty():
+            self.last_line = self.data.get()
+        return self.last_line
 
     def readlines(self):
         lines = []
