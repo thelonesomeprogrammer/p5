@@ -1,5 +1,5 @@
-const int A_LEFT = A0;
-const int A_RIGHT = A1;
+const int A_LEFT = A7;
+const int A_RIGHT = A8;
 const int NUM_SAMPLES = 50;
 const float VCC = 5.0;
 const int ADC_MAX = 1023;
