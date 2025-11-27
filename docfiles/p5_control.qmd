@@ -1,0 +1,53 @@
+
+
+1st order: $$\frac{0.1403}{0.109s + 1}$$
+
+```{python}
+# Python code to check the result
+import numpy as np
+import matplotlib.pyplot as plt
+import control as ctrl
+
+s = ctrl.TransferFunction.s
+plant = (0.1403 / (0.109*s + 1)) * (1/s)
+sensor = 1
+
+uncontrolled_system = plant * sensor
+
+ctrl.bode_plot(uncontrolled_system, display_margins=True, grid=True)
+plt.show()
+```
+
+```{python}
+Kp = 80
+Ki = 2*Kp
+Kd = 0.3*Kp
+controller = Kp + Ki/s
+i_system = controller * plant * sensor
+ctrl.bode_plot(i_system, display_margins=True, grid=True)
+plt.show()
+controller = Kp + Ki/s + Kd*s
+id_system = controller * plant * sensor
+ctrl.bode_plot(id_system, display_margins=True, grid=True)
+```
+
+```{python}
+
+p_con = ctrl.feedback(i_system, 1)
+time, response = ctrl.step_response(p_con)
+plt.plot(time, response)
+plt.title("Step Response - P Controller")
+plt.xlabel("Time (s)")
+plt.ylabel("Amplitude")
+plt.grid(True)
+plt.show()
+
+pi_con = ctrl.feedback(id_system, 1)
+time, response = ctrl.step_response(pi_con)
+plt.plot(time, response)
+plt.title("Step Response - PI Controller")
+plt.xlabel("Time (s)")
+plt.ylabel("Amplitude")
+plt.grid(True)
+plt.show()
+```

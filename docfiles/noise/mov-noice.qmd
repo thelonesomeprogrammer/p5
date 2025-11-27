@@ -1,0 +1,240 @@
+
+# analysis of movement position, speed, and acceleration data from potentiometer readings
+
+## setup
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import butter, filtfilt
+
+with open("./move-pos-vel-acc.txt", "r") as f:
+		data = f.readlines()
+		posdata = [list(map(float, line.strip().split(",")[1:])) for line in data]
+		time = np.array([int(line.strip().split(",")[0]) for line in data])
+		data = posdata
+		dt = np.array([line[0] for line in data])
+		pos = np.array([line[1] for line in data])
+		vel = np.array([line[2] for line in data])
+		vel_filt = np.array([line[3] for line in data])
+		acc = np.array([line[4] for line in data])
+		acc_filt = np.array([line[5] for line in data])
+adt = np.mean(np.diff(dt))  # main time difference
+fs = 1 / adt  # sampling frequency in Hz
+```
+
+## position over time
+```{python}
+plt.plot(time, pos, label='Position', color='blue')
+plt.title('Position vs Time')
+plt.xlabel('Time (ms)')
+plt.ylabel('Position (units)')
+plt.grid()
+plt.show()
+```
+
+## velocity and filtered velocity over time
+```{python}
+plt.plot(time, vel, label='Velocity', color='orange', alpha=0.5)
+plt.plot(time, vel_filt, label='exp Filtered Velocity', color='red')
+plt.title('Velocity vs Time')
+plt.xlabel('Time (ms)')
+plt.ylabel('Velocity (units/ms)')
+plt.legend()
+plt.show()
+```
+
+## acceleration and filtered acceleration over time
+```{python}
+plt.plot(time, acc, label='Acceleration', color='green', alpha=0.5)
+plt.plot(time, acc_filt, label='exp Filtered Acceleration', color='purple')
+plt.title('Acceleration vs Time')
+plt.xlabel('Time (ms)')
+plt.ylabel('Acceleration (units/ms²)')
+plt.legend()
+plt.show()
+```
+
+## dft of position data
+```{python}
+pos_dft = np.fft.fft(pos)
+freqs = np.fft.fftfreq(len(pos), d=adt)
+plt.plot(freqs, np.abs(pos_dft), color='blue')
+plt.title('DFT of Position Data')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Magnitude')
+plt.show()
+```
+
+## dft of velocity data
+```{python}
+vel_dft = np.fft.fft(vel)
+plt.plot(freqs, np.abs(vel_dft), color='orange')
+plt.title('DFT of Velocity Data')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Magnitude')
+plt.show()
+```
+
+## dft of acceleration data
+```{python}
+acc_dft = np.fft.fft(acc)
+plt.figure(figsize=(10, 4))
+plt.plot(freqs, np.abs(acc_dft), color='green')
+plt.title('DFT of Acceleration Data')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Magnitude')
+plt.show()
+```
+
+## dft of filtered velocity data
+```{python}
+vel_filt_dft = np.fft.fft(vel_filt)
+plt.plot(freqs, np.abs(vel_filt_dft), color='red')
+plt.title('DFT of exp Filtered Velocity Data')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Magnitude')
+plt.show()
+```
+
+## dft of filtered acceleration data
+```{python}
+acc_filt_dft = np.fft.fft(acc_filt)
+plt.plot(freqs, np.abs(acc_filt_dft), color='purple')
+plt.title('DFT of exp Filtered Acceleration Data')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Magnitude')
+plt.show()
+```
+
+## butterworth filter design
+```{python}
+cutoff = 100000	# Hz
+order = 2
+b, a = butter(order, cutoff, btype='low', fs=fs)
+
+butter_vel = filtfilt(b, a, vel)
+butter_acc = filtfilt(b, a, acc)
+plt.plot(time, butter_vel, label='Butterworth Filtered Velocity', color='cyan')
+plt.title('Butterworth Filtered Velocity vs Time')
+plt.xlabel('Time (ms)')
+plt.ylabel('Velocity (units/ms)')
+plt.legend()
+plt.show()
+
+plt.plot(time, butter_acc, label='Butterworth Filtered Acceleration', color='magenta')
+plt.title('Butterworth Filtered Acceleration vs Time')
+plt.xlabel('Time (ms)')
+plt.ylabel('Acceleration (units/ms²)')
+plt.legend()
+plt.show()
+print(a, b)
+```
+
+## dft of butterworth filtered velocity data
+```{python}
+butter_vel_dft = np.fft.fft(butter_vel)
+plt.plot(freqs, np.abs(butter_vel_dft), color='cyan')
+plt.title('DFT of Butterworth Filtered Velocity Data')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Magnitude')
+plt.show()
+```
+
+## dft of butterworth filtered acceleration data
+```{python}
+butter_acc_dft = np.fft.fft(butter_acc)
+plt.plot(freqs, np.abs(butter_acc_dft), color='magenta')
+plt.title('DFT of Butterworth Filtered Acceleration Data')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Magnitude')
+plt.show()
+```
+
+## filtered vs unfiltered comparison
+```{python}
+plt.plot(time, vel, label='Unfiltered Velocity', color='orange', alpha=0.5)
+plt.plot(time, butter_vel, label='Butterworth Filtered Velocity', color='cyan')
+plt.title('Velocity: Unfiltered vs Butterworth Filtered')
+plt.xlabel('Time (ms)')
+plt.ylabel('Velocity (units/ms)')
+plt.legend()
+plt.show()
+plt.plot(time, acc, label='Unfiltered Acceleration', color='green', alpha=0.5)
+plt.plot(time, butter_acc, label='Butterworth Filtered Acceleration', color='magenta')
+plt.title('Acceleration: Unfiltered vs Butterworth Filtered')
+plt.xlabel('Time (ms)')
+plt.ylabel('Acceleration (units/ms²)')
+plt.legend()
+plt.show()
+```
+
+
+## data from butterworth velocity test
+```{python}
+with open("./move-vel-filter.txt", "r") as f:
+		data = f.readlines()
+		time = np.array([int(line.strip().split(",")[0]) for line in data])
+		data = [list(map(float, line.strip().split(",")[1:])) for line in data]
+		dt = np.array([line[0] for line in data])
+		pos = np.array([line[1] for line in data])
+		vel = np.array([line[2] for line in data])
+		vel_butter = np.array([line[3] for line in data])
+		acc = np.array([line[4] for line in data])
+adt = np.mean(np.diff(dt))  # main time difference
+fs = 1 / adt  # sampling frequency in Hz
+```
+
+## plot of position test data
+```{python}
+plt.plot(time, pos, label='Position', color='blue')
+plt.title('Position Test Data')
+plt.xlabel('Time (ms)')
+plt.ylabel('Position (units)')
+plt.grid()
+plt.show()
+```
+
+## butterworth filtered velocity test data plot
+```{python}
+plt.plot(time, vel, label='Unfiltered Velocity', color='orange', alpha=0.5)
+plt.plot(time, vel_butter, label='Butterworth Filtered Velocity', color='cyan')
+plt.title('Velocity Test: Unfiltered vs Butterworth Filtered')
+plt.xlabel('Time (ms)')
+plt.ylabel('Velocity (units/ms)')
+plt.legend()
+plt.show()
+```
+
+## butterworth filtered velocity acceleration data plot
+```{python}
+plt.plot(time, acc, label='Acceleration', color='green')
+plt.title('Acceleration from filtered Velocity Test Data')
+plt.xlabel('Time (ms)')
+plt.ylabel('Acceleration (units/ms²)')
+plt.legend()
+plt.show()
+```
+
+## dft of butterworth filtered velocity test data
+```{python}
+vel_butter_dft = np.fft.fft(vel_butter)
+freqs = np.fft.fftfreq(len(vel_butter), d=adt)
+plt.plot(freqs, np.abs(vel_butter_dft), color='cyan')
+plt.title('DFT of Butterworth Filtered Velocity Test Data')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Magnitude')
+plt.show()
+```
+
+## dft of acceleration from butterworth filtered velocity test data
+```{python}
+acc_dft = np.fft.fft(acc)
+plt.plot(freqs, np.abs(acc_dft), color='green')
+plt.title('DFT of Acceleration from Butterworth Filtered Velocity Test Data')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Magnitude')
+plt.show()
+```
+
+
+

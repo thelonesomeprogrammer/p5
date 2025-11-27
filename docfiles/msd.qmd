@@ -1,0 +1,26 @@
+
+$$
+\sum F = -kx -c\dot{x}+F_{ext} = m\ddot{x}
+$$
+
+Where:
+
+- \( k \) is the spring constant
+- \( c \) is the damping coefficient
+- \( $F_{ext}$ \) is the external force applied to the system
+- \( m \) is the mass of the object
+- \( x \) is the displacement from the equilibrium position
+
+$$
+x = \frac{-c\dot{x} -m\ddot{x} + F_{ext}}{k}
+$$
+So displacement as a function of extenal force is given by:
+$$
+f(x) = \frac{-c\dot{f(x)} -m\ddot{f(x)} + F_{ext}}{k}
+$$
+Where \( f(x) \) is the displacement as a function of the external force \( F_{ext} \).
+so the implemented equation is given by:
+$$
+x[k+1] = \frac{-c(x[k-1]-x[k]) -m((x[k-1]-x[k])-(x[k-2]-x[k-1])) + F_{ext}}{s}
+$$
+where \( x[k] \) is the current displacement, \( x[k-1] \) is the previous displacement, and \( x[k-2] \) is the displacement before that \(s\) is the spring constant.

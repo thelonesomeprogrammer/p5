@@ -1,0 +1,273 @@
+---
+title: "Sensor Noise Reduction Analysis"
+format:
+  html:
+    code-fold: true
+    theme: cosmo
+---
+
+# Noise Reduction
+
+This document analyzes noise in FSR (Force Sensitive Resistor) and potentiometer data, comparing raw ADC values with converted physical units and filtered outputs.
+
+## Setup
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import butter, filtfilt
+
+# Set plot style
+plt.style.use('seaborn-v0_8-darkgrid')
+plt.rcParams['figure.figsize'] = (12, 4)
+plt.rcParams['figure.dpi'] = 100
+
+# Load converted data
+with open("./data.txt") as f:
+    data = [list(map(float, line.strip().split(","))) for line in f.readlines()]
+    convfsr1 = [row[0] for row in data]
+    convfsr2 = [row[1] for row in data]
+    convfsr3 = [row[2] for row in data]
+    convfsr4 = [row[3] for row in data]
+    convfsr5 = [row[4] for row in data]
+    convpos  = [row[5] for row in data]
+
+# Load raw data
+with open("./raw-data.txt") as f:
+    data = [list(map(int, line.strip().split(","))) for line in f.readlines()]
+    rawfsr1 = [row[0] for row in data]
+    rawfsr2 = [row[1] for row in data]
+    rawfsr3 = [row[2] for row in data]
+    rawfsr4 = [row[3] for row in data]
+    rawfsr5 = [row[4] for row in data]
+    rawpos  = [row[5] for row in data]
+
+# Sample parameters
+n = range(len(rawfsr1))
+fs = 333  # Sampling frequency (Hz)
+
+print(f"Loaded {len(rawfsr1)} samples at {fs} Hz")
+```
+
+## Raw Analog Data
+
+Visualizing raw ADC values (0-1023) from all sensors.
+
+```{python}
+#| label: fig-raw-data
+#| fig-cap: "Raw ADC readings from FSR sensors and potentiometer"
+
+fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+fig.suptitle('Raw Analog Data (ADC Values)', fontsize=16, fontweight='bold')
+
+sensors = [
+    (rawfsr1, "FSR1", axes[0, 0]),
+    (rawfsr2, "FSR2", axes[0, 1]),
+    (rawfsr3, "FSR3", axes[0, 2]),
+    (rawfsr4, "FSR4", axes[1, 0]),
+    (rawfsr5, "FSR5", axes[1, 1]),
+    (rawpos, "Potentiometer", axes[1, 2])
+]
+
+for data, label, ax in sensors:
+    ax.scatter(n, data, s=1, alpha=0.6)
+    ax.set_title(f'{label}', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Sample Number')
+    ax.set_ylabel('ADC Value (0-1023)')
+    ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+```
+
+## Data After Conversion
+
+Converted to physical units: Force (N) for FSRs and Position (rad) for potentiometer.
+
+```{python}
+#| label: fig-converted-data
+#| fig-cap: "Sensor data converted to physical units"
+n= range(len(convfsr1))
+
+fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+fig.suptitle('Converted Sensor Data', fontsize=16, fontweight='bold')
+
+sensors = [
+    (convfsr1, "FSR1", "Force (N)", axes[0, 0]),
+    (convfsr2, "FSR2", "Force (N)", axes[0, 1]),
+    (convfsr3, "FSR3", "Force (N)", axes[0, 2]),
+    (convfsr4, "FSR4", "Force (N)", axes[1, 0]),
+    (convfsr5, "FSR5", "Force (N)", axes[1, 1]),
+    (convpos, "Potentiometer", "Position (rad)", axes[1, 2])
+]
+
+for data, label, ylabel, ax in sensors:
+    ax.scatter(n, data, s=1, alpha=0.6, c='tab:orange')
+    ax.set_title(f'{label}', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Sample Number')
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+```
+
+## Frequency Domain Analysis (DFT)
+
+Analyzing frequency content to identify noise characteristics.
+
+```{python}
+#| label: fig-dft-original
+#| fig-cap: "Frequency spectrum of converted sensor data"
+
+# Compute FFT for all sensors
+dft_data = {
+    'FSR1': np.fft.fft(convfsr1),
+    'FSR2': np.fft.fft(convfsr2),
+    'FSR3': np.fft.fft(convfsr3),
+    'FSR4': np.fft.fft(convfsr4),
+    'FSR5': np.fft.fft(convfsr5),
+    'Potentiometer': np.fft.fft(convpos)
+}
+
+# Frequency axis
+freqs = np.fft.fftfreq(len(convfsr1), 1/fs)
+freqs = freqs[:len(freqs)//2]  # Only positive frequencies
+
+fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+fig.suptitle('Frequency Spectrum (DFT)', fontsize=16, fontweight='bold')
+axes = axes.flatten()
+
+for i, (label, dft) in enumerate(dft_data.items()):
+    magnitude = np.abs(dft)[:len(freqs)]
+    axes[i].plot(freqs, magnitude, linewidth=0.8)
+    axes[i].set_title(f'{label}', fontsize=12, fontweight='bold')
+    axes[i].set_xlabel('Frequency (Hz)')
+    axes[i].set_ylabel('Magnitude')
+    axes[i].grid(True, alpha=0.3)
+    axes[i].set_xlim([0, fs/2])  # Nyquist limit
+
+plt.tight_layout()
+plt.show()
+```
+
+## Butterworth Filtering
+
+Applying a 2nd order Butterworth lowpass filter at 1 Hz cutoff to reduce noise.
+
+```{python}
+#| label: fig-filtered-data
+#| fig-cap: "FSR data after Butterworth filtering"
+
+# Design Butterworth filter
+cutoff = 1  # Hz
+order = 2
+b, a = butter(order, cutoff, btype='low', fs=fs)
+
+print(f"Filter: {order}nd order Butterworth, cutoff = {cutoff} Hz, fs = {fs} Hz")
+
+# Apply filter to FSR data
+fsr_filtered = {
+    'FSR1': filtfilt(b, a, convfsr1),
+    'FSR2': filtfilt(b, a, convfsr2),
+    'FSR3': filtfilt(b, a, convfsr3),
+    'FSR4': filtfilt(b, a, convfsr4),
+    'FSR5': filtfilt(b, a, convfsr5)
+}
+
+fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+fig.suptitle(f'Filtered FSR Data ({order}nd order, {cutoff} Hz cutoff)', 
+             fontsize=16, fontweight='bold')
+axes = axes.flatten()
+
+for i, (label, data) in enumerate(fsr_filtered.items()):
+    axes[i].scatter(n, data, s=1, alpha=0.6, c='tab:green')
+    axes[i].set_title(f'{label} (Filtered)', fontsize=12, fontweight='bold')
+    axes[i].set_xlabel('Sample Number')
+    axes[i].set_ylabel('Force (N)')
+    axes[i].grid(True, alpha=0.3)
+
+# Hide extra subplot
+axes[5].axis('off')
+
+plt.tight_layout()
+plt.show()
+```
+
+## Frequency Spectrum After Filtering
+
+Comparing frequency content before and after filtering.
+
+```{python}
+#| label: fig-dft-filtered
+#| fig-cap: "Frequency spectrum comparison: original vs filtered"
+
+fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+fig.suptitle('Frequency Spectrum: Original vs Filtered', fontsize=16, fontweight='bold')
+axes = axes.flatten()
+
+fsr_original = [convfsr1, convfsr2, convfsr3, convfsr4, convfsr5]
+labels = ['FSR1', 'FSR2', 'FSR3', 'FSR4', 'FSR5']
+
+for i, (orig, filt, label) in enumerate(zip(fsr_original, fsr_filtered.values(), labels)):
+    # Compute FFTs
+    dft_orig = np.fft.fft(orig)
+    dft_filt = np.fft.fft(filt)
+    
+    mag_orig = np.abs(dft_orig)[:len(freqs)]
+    mag_filt = np.abs(dft_filt)[:len(freqs)]
+    
+    axes[i].plot(freqs, mag_orig, linewidth=0.8, alpha=0.7, label='Original')
+    axes[i].plot(freqs, mag_filt, linewidth=0.8, alpha=0.9, label='Filtered')
+    axes[i].axvline(cutoff, color='r', linestyle='--', linewidth=1, alpha=0.5, label=f'Cutoff ({cutoff} Hz)')
+    axes[i].set_title(f'{label}', fontsize=12, fontweight='bold')
+    axes[i].set_xlabel('Frequency (Hz)')
+    axes[i].set_ylabel('Magnitude')
+    axes[i].legend(fontsize=8)
+    axes[i].grid(True, alpha=0.3)
+    axes[i].set_xlim([0, 20])  # Focus on low frequencies
+
+# Hide extra subplot
+axes[5].axis('off')
+
+plt.tight_layout()
+plt.show()
+```
+
+## Summary Statistics
+
+```{python}
+import pandas as pd
+
+def noise_stats(original, filtered, label):
+    """Calculate noise reduction statistics"""
+    noise_original = np.std(original)
+    noise_filtered = np.std(filtered)
+    reduction_db = 20 * np.log10(noise_original / noise_filtered)
+    
+    return {
+        'Sensor': label,
+        'Original Std Dev': f'{noise_original:.4f}',
+        'Filtered Std Dev': f'{noise_filtered:.4f}',
+        'Noise Reduction': f'{reduction_db:.2f} dB'
+    }
+
+stats = [
+    noise_stats(convfsr1, fsr_filtered['FSR1'], 'FSR1'),
+    noise_stats(convfsr2, fsr_filtered['FSR2'], 'FSR2'),
+    noise_stats(convfsr3, fsr_filtered['FSR3'], 'FSR3'),
+    noise_stats(convfsr4, fsr_filtered['FSR4'], 'FSR4'),
+    noise_stats(convfsr5, fsr_filtered['FSR5'], 'FSR5')
+]
+
+df = pd.DataFrame(stats)
+print(df.to_markdown(index=False))
+```
+
+## filter values
+```{python}
+print("Butterworth filter coefficients:")
+print("b coefficients:", b)
+print("a coefficients:", a)
+```
+
