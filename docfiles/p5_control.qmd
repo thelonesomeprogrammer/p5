@@ -1,4 +1,8 @@
 
+---
+title: "Control System Analysis"
+format: html
+---
 
 1st order: $$\frac{0.1403}{0.109s + 1}$$
 

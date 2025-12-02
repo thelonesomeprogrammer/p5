@@ -1,4 +1,10 @@
 
+---
+title: "Mass Spring Damper Model"
+format: html
+editor: visual
+---
+
 $$
 \sum F = -kx -c\dot{x}+F_{ext} = m\ddot{x}
 $$
