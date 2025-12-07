@@ -62,6 +62,11 @@ typedef struct {
   float alpha; // Smoothing factor (0-1)
 }exp_t;
 
+enum dir_e {
+  front,
+  back,
+  sense
+};
 
 // ============================================================================
 // Global constents
@@ -79,6 +84,9 @@ const int apins[] = {A1, A2, A3, A4, A5, A6, A7, A8, A9, A10};  // 10 analog pin
 long dt_times[DT_WINDOW_SIZE];
 int dt_index;
 
+// help factor
+float helpfactor = 1.0;
+
 
 // Controller instances
 admittance_t m_msd;  // Admittance controller (outer loop)
@@ -89,11 +97,7 @@ float des;                      // Desired position
 int speed;                      // Motor PWM speed command [-255, 255]
 int p;                          // Counter for periodic logging
 
-enum dir {
-  front,
-  back,
-  sense
-};
+dir_e dir = sense;
 
 butter_t butter_force[5];
 
@@ -433,7 +437,7 @@ int fill_weat(int pair) {
  */
 void admittance(float force, float dt10) {
 
-  m_msd.virt_acc = (force - m_msd.c*m_msd.virt_vel - m_msd.k*m_msd.virt_pos) * m_msd.inv_m;
+  m_msd.virt_acc = (force - m_msd.c*m_msd.virt_vel - m_msd.k*(m_msd.virt_pos-1.0)) * m_msd.inv_m;
 
   // Update state history for next iteration
   m_msd.virt_vel += m_msd.virt_acc * dt10;
@@ -458,19 +462,95 @@ void admittance(float force, float dt10) {
  */
 float force()  {
   // Average force from front sensors (3 sensors)
-  float front = (newfoot[0] + newfoot[1] + newfoot[2]) * 0.333333;
+  float front_avg = (newfoot[0] + newfoot[1] + newfoot[2]) * 0.4 * helpfactor;
   
   // Average force from back sensors (2 sensors)
-  float back = (newfoot[3] + newfoot[4]) * 0.5;
-  
+  float back_avg = (newfoot[3] + newfoot[4]) * 0.5 * helpfactor;
+
   // Moment arm lengths [cm]
   float flen = 11.0;  // Front sensor distance from pivot
   float blen = 7.0;   // Back sensor distance from pivot
+
+  // distinct constants make tuning easier later
+  const float THRESHOLD = 0.01; 
+  const float DROPOUT_LIMIT = 0.005;
+
+  switch (dir) {
+    case sense: {
+      float diff = front_avg - back_avg;
+
+      // Use if/else for float comparisons
+      if (diff > THRESHOLD) {
+      // Front is significantly stronger
+        dir = front;
+      } 
+      else if (diff < -THRESHOLD) { 
+        // Back is significantly stronger (result is negative)
+        dir = back;
+      }
+      // If between -1.0 and 1.0, we stay in 'sense' and return 0.0
+      return 0.0;
+    }
+
+    case front: {
+      // Hysteresis: If signal gets too weak, go back to sensing
+      if (front_avg < DROPOUT_LIMIT) {
+        dir = sense;
+        return 0.0; // Usually better to return 0 immediately on state change
+      }
+      return front_avg * flen;
+    }
+
+    case back: {
+       if (back_avg < DROPOUT_LIMIT) {
+        dir = sense;
+        return 0.0;
+      }
+      return -back_avg * blen;
+    }
+        
+    default: {
+      // Always good practice to handle unexpected states
+      dir = sense;
+      return 0.0;
+    }
+  }
   
   // Calculate net moment and normalize by total lever arm
   // Positive = front-loaded, Negative = back-loaded
-  return (front * flen - back * blen)*3;
+  //return (front * flen - back * blen)*3;
 }
+
+// ============================================================================
+// help factor calculation
+// ============================================================================
+void help() {
+  Serial.println("starting assist level calibration");
+  m_msd.k = 3;
+  float forces[500] = {0.};
+
+  for (int i; i > 500; i++){
+    loop();
+    forces[i] = force();
+  }
+
+  for ( int i = 2; i < 498; i++){
+    forces[i] = (forces[i-2] + forces[i-1] + forces[i] + forces[i+1] + forces[i+2]) / 5.0;
+  }
+  float maxf = 0.;
+  for ( int i = 0; i < 500; i++){
+    if (abs(forces[i]) > maxf){
+      maxf = abs(forces[i]);
+    }
+  }
+  Serial.print("max force detected: ");
+  Serial.println(maxf);
+  helpfactor = 10.0 / maxf;
+  Serial.print("help factor set to: ");
+  Serial.println(helpfactor);
+  m_msd.k = 0.005;
+}
+
 
 // ============================================================================
 // Debug Logging
@@ -515,6 +595,9 @@ void log(float rad) {
   // Print position
   Serial.print(", rad: ");
   Serial.print(rad);
+
+  Serial.print(", dir: ");
+  Serial.print(dir);
     
   // Print final motor command
   Serial.print(", con: ");
