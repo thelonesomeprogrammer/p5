@@ -381,18 +381,13 @@ float read_weat(int pair) {
   int read = analogRead(apins[pair * 2]);        // Left sensor
   int read2 = analogRead(apins[pair * 2 + 1]);   // Right sensor
 
-  int pN = read2 - read;
+  int pN = read - read2;
+  int inv = 1630286/pN - 3412;
+  // Serial.println(pN);
   // Subtract baseline (tare) to get relative force
-  int current = pN - basefoot[pair];
-  current = constrain(current, -50000, 50000);
-  
+  int current = inv - basefoot[pair];
   float avg = current;  // Return filtered average
   avg = butter_step(&butter_force[pair], avg);
-
-  // Convert ADC reading to grams using exponential calibration curve
-  // curve: grams = exp(0.02069 * ADC + 1.4916)
-  avg = avg*0.02068937 + 1.4916415;
-  avg = exp(avg);
   
   // Convert grams to Newtons (g/1000)
   avg *= 0.0098066500286389;
@@ -413,13 +408,14 @@ int fill_weat(int pair) {
   int read = analogRead(apins[pair * 2]);        // Left sensor
   int read2 = analogRead(apins[pair * 2 + 1]);   // Right sensor
 
-  int pN = (read2 - read);  
+  int pN = read - read2;  
   
   moveavg_sum[pair] += pN;
   movavg_vals[pair] += 1;
 
   
-  return moveavg_sum[pair] / movavg_vals[pair];
+  int avg = moveavg_sum[pair] / movavg_vals[pair];
+  return 1630286/avg - 3412;
 }
 
 // ============================================================================
