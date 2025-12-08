@@ -211,6 +211,7 @@ void loop() {
   p++;
   // Read current position from potentiometer/encoder
   int read = analogRead(A0);
+
   // Convert ADC reading to physical position (radians)
   // Formula: position = read * 0.005 + 0.0565
   float rad = read * 0.005 + 0.0565;
@@ -233,6 +234,20 @@ void loop() {
     newfoot[i] = read_weat(i);
   }
 
+    if (p % 2 == 0){
+    // Log data periodically for debugging/tuning
+    log(rad);
+  }
+
+  // Safety check: stop motor if position is out of valid range
+  // Prevents damage if sensor disconnects or reaches mechanical limits
+  if (rad > 2.1 || rad < 0.80) {
+    speed = 0;
+    analogWrite(8, 0);
+    analogWrite(9, 0);
+    return;
+  }
+
   if (p % 10 == 9) {
 
     // Control cascade:
@@ -244,30 +259,16 @@ void loop() {
     admittance(f, dt10);
   }
 
-  if (p % 50 == 0){
-    // Log data periodically for debugging/tuning
-    log(rad);
-  }
-  
-  
-  // Safety check: stop motor if position is out of valid range
-  // Prevents damage if sensor disconnects or reaches mechanical limits
-  if (read > 400 || read < 70) {
-    Serial.print("bounds: ");
-    Serial.println(read);
-    speed = 0;
-  } else {
+  float err = des - rad; 
 
-    float err = des - rad; 
-
-    // 3. PID control: position error -> motor command
-    //    Tracks the desired position
-    speed = pidstep(err, dt, odt10);
+  // 3. PID control: position error -> motor command
+  //    Tracks the desired position
+  speed = pidstep(err, dt, odt10);
     
-    // Limit motor speed to safe range
-    speed = constrain(speed, -60, 60);
-    if (speed > -17 && speed < 17){speed = 0;}
-  }
+  // Limit motor speed to safe range
+  speed = constrain(speed, -60, 60);
+  if (speed > -17 && speed < 17){speed = 0;}
+  
   
   // Apply motor command via H-bridge
   // PWM on pins 8 and 9 controls direction and speed
@@ -438,6 +439,8 @@ int fill_weat(int pair) {
 void admittance(float force, float dt10) {
 
   m_msd.virt_acc = (force - m_msd.c*m_msd.virt_vel - m_msd.k*(m_msd.virt_pos-1.0)) * m_msd.inv_m;
+
+  m_msd.virt_acc = constrain(m_msd.virt_acc, -1.0, 1.0);
 
   // Update state history for next iteration
   m_msd.virt_vel += m_msd.virt_acc * dt10;
