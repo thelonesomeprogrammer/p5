@@ -93,7 +93,7 @@ admittance_t m_msd;  // Admittance controller (outer loop)
 pid_t pid;           // PID controller (inner loop)
 
 // System state variables
-float des;                      // Desired position
+float des = 1;                      // Desired position
 int speed;                      // Motor PWM speed command [-255, 255]
 int p;                          // Counter for periodic logging
 
@@ -146,9 +146,9 @@ void setup() {
 
   // Initialize PID controller gains
   // Tuned for position tracking with reasonable response
-  pid.kp = 130;                    // Proportional gain
-  pid.ki = 0.535 * pid.kp;       // Integral gain (13.5% of Kp)
-  pid.kd = 0.135 * pid.kp;         // Derivative gain (130% of Kp for damping)
+  pid.kp = 140;                    // Proportional gain
+  pid.ki = 0.8 * pid.kp;       // Integral gain (13.5% of Kp)
+  pid.kd = 0.2 * pid.kp;         // Derivative gain (130% of Kp for damping)
   pid.integral = 0.0;              // Clear integral accumulator
 
   for (int i = 0; i < 10; i++){
@@ -158,9 +158,9 @@ void setup() {
 
   // Initialize admittance controller parameters
   // These define the virtual mechanical impedance of the system
-  m_msd.k = 0.005;                               // Low stiffness for compliant behavior
-  m_msd.c = 1.0;                                      // Moderate damping
-  m_msd.inv_m = 1.0/0.05; // 1/m                                     // Virtual inertia 
+  m_msd.k = 0.04;                               // Low stiffness for compliant behavior
+  m_msd.c = 5.0;                                      // Moderate damping
+  m_msd.inv_m = 1.0/0.4; // 1/m                                     // Virtual inertia 
   m_msd.virt_pos = analogRead(A0) * 0.005 + 0.0565;// Initialize with current position
   m_msd.virt_vel = 0.;                               // Start at rest
   m_msd.virt_acc = 0.;
@@ -234,7 +234,7 @@ void loop() {
     newfoot[i] = read_weat(i);
   }
 
-    if (p % 2 == 0){
+    if (p % 51 == 0){
     // Log data periodically for debugging/tuning
     log(rad);
   }
@@ -248,7 +248,7 @@ void loop() {
     return;
   }
 
-  if (p % 10 == 9) {
+  if (p % 10 == 2) {
 
     // Control cascade:
     // 1. Calculate net torque/force from sensor readings
@@ -349,7 +349,7 @@ float pidstep(float error, float dt, float odt) {
   pid.integral += error * dt;
   
   // Anti-windup: clamp integral to prevent excessive buildup
-  pid.integral = constrain(pid.integral, -0.05, 0.05);
+  pid.integral = constrain(pid.integral, -0.2, 0.2);
 
   // Calculate derivative (rate of change of error)
   // Note: Uses error from 10 samples ago (dt_window_size) to smooth out the derivative
@@ -382,10 +382,9 @@ float read_weat(int pair) {
   int read2 = analogRead(apins[pair * 2 + 1]);   // Right sensor
 
   int pN = read - read2;
-  int inv = 1630286/pN - 3412;
-  // Serial.println(pN);
+  int s = -12 * pN + 5582;
   // Subtract baseline (tare) to get relative force
-  int current = inv - basefoot[pair];
+  int current = s - basefoot[pair];
   float avg = current;  // Return filtered average
   avg = butter_step(&butter_force[pair], avg);
   
@@ -415,7 +414,7 @@ int fill_weat(int pair) {
 
   
   int avg = moveavg_sum[pair] / movavg_vals[pair];
-  return 1630286/avg - 3412;
+  return -12 * avg + 5582;
 }
 
 // ============================================================================
@@ -434,13 +433,15 @@ int fill_weat(int pair) {
  */
 void admittance(float force, float dt10) {
 
-  m_msd.virt_acc = (force - m_msd.c*m_msd.virt_vel - m_msd.k*(m_msd.virt_pos-1.0)) * m_msd.inv_m;
+  m_msd.virt_acc = (force - m_msd.c*m_msd.virt_vel - m_msd.k*(m_msd.virt_pos-1.5)) * m_msd.inv_m;
 
   m_msd.virt_acc = constrain(m_msd.virt_acc, -1.0, 1.0);
 
   // Update state history for next iteration
   m_msd.virt_vel += m_msd.virt_acc * dt10;
+  m_msd.virt_vel = constrain(m_msd.virt_vel, -2.0, 2.0);
   m_msd.virt_pos += m_msd.virt_vel * dt10;
+  m_msd.virt_pos = constrain(m_msd.virt_pos, -0.8, 2.1);
 
   // Calculate desired position using admittance equation
   // This creates a compliant response to external forces
@@ -461,7 +462,7 @@ void admittance(float force, float dt10) {
  */
 float force()  {
   // Average force from front sensors (3 sensors)
-  float front_avg = (newfoot[0] + newfoot[1] + newfoot[2]) * 0.4 * helpfactor;
+  float front_avg = (newfoot[0] + newfoot[1] + newfoot[2]) * 0.33 * helpfactor;
   
   // Average force from back sensors (2 sensors)
   float back_avg = (newfoot[3] + newfoot[4]) * 0.5 * helpfactor;
@@ -471,8 +472,8 @@ float force()  {
   float blen = 7.0;   // Back sensor distance from pivot
 
   // distinct constants make tuning easier later
-  const float THRESHOLD = 0.01; 
-  const float DROPOUT_LIMIT = 0.005;
+  const float THRESHOLD = 3.0; 
+  const float DROPOUT_LIMIT = 2.0;
 
   switch (dir) {
     case sense: {
