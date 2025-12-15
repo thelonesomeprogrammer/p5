@@ -28,13 +28,13 @@ typedef struct  {
  * Implements a virtual mass-spring-damper (MSD) system that generates
  * desired positions based on measured forces
  */
-typedef struct  {
+  typedef struct  {
   float k;         // Spring stiffness [N/m]
   float c;         // Damping coefficient [N·s/m]
-  float inv_m;     // inverted Virtual mass [kg]
+  float inv_m;     // Inverted virtual mass [1/kg]
+  float spring_zero; // Rest position of the virtual spring [rad]
   float virt_pos;  // Previous position for velocity estimation [rad]
   float virt_vel;  // Previous velocity for acceleration estimation [rad/s]
-  float virt_acc;
 } admittance_t;
 
 /**
@@ -62,14 +62,9 @@ typedef struct {
   float alpha; // Smoothing factor (0-1)
 }exp_t;
 
-enum dir_e {
-  front,
-  back,
-  sense
-};
 
 // ============================================================================
-// Global constents
+// Global constants
 // ============================================================================
 const int dt_window_size = DT_WINDOW_SIZE;
 
@@ -80,11 +75,11 @@ const int apins[] = {A1, A2, A3, A4, A5, A6, A7, A8, A9, A10};  // 10 analog pin
 // Global Variables
 // ============================================================================
 
-// dt 
+// Time tracking
 long dt_times[DT_WINDOW_SIZE];
 int dt_index;
 
-// help factor
+// Assist factor
 float helpfactor = 1.0;
 
 
@@ -93,11 +88,9 @@ admittance_t m_msd;  // Admittance controller (outer loop)
 pid_t pid;           // PID controller (inner loop)
 
 // System state variables
-float des = 1;                      // Desired position
+float des;                      // Desired position
 int speed;                      // Motor PWM speed command [-255, 255]
 int p;                          // Counter for periodic logging
-
-dir_e dir = sense;
 
 butter_t butter_force[5];
 
@@ -147,8 +140,8 @@ void setup() {
   // Initialize PID controller gains
   // Tuned for position tracking with reasonable response
   pid.kp = 140;                    // Proportional gain
-  pid.ki = 0.8 * pid.kp;       // Integral gain (13.5% of Kp)
-  pid.kd = 0.2 * pid.kp;         // Derivative gain (130% of Kp for damping)
+  pid.ki = 0.8 * pid.kp;       // Integral gain
+  pid.kd = 0.2 * pid.kp;         // Derivative gain
   pid.integral = 0.0;              // Clear integral accumulator
 
   for (int i = 0; i < 10; i++){
@@ -159,11 +152,11 @@ void setup() {
   // Initialize admittance controller parameters
   // These define the virtual mechanical impedance of the system
   m_msd.k = 0.04;                               // Low stiffness for compliant behavior
-  m_msd.c = 5.0;                                      // Moderate damping
-  m_msd.inv_m = 1.0/0.4; // 1/m                                     // Virtual inertia 
-  m_msd.virt_pos = analogRead(A0) * 0.005 + 0.0565;// Initialize with current position
+  m_msd.c = 1000.0;                                      // Moderate damping
+  m_msd.inv_m = 1.0/100;                                     // Virtual inertia (inverse mass) 
+  m_msd.virt_pos = analogRead(A0) * 0.007 + 0.1655;// Initialize with current position
   m_msd.virt_vel = 0.;                               // Start at rest
-  m_msd.virt_acc = 0.;
+  m_msd.spring_zero = 1.5;                     // Neutral spring position
 
   // Tare force sensors - record baseline readings with no applied force
   // Fill moving average buffers with initial readings
@@ -183,11 +176,17 @@ void setup() {
     butter_force[i].a2 =  0.97366889;
   }
 
-  // heat up filter 
+  // Warm up filter 
   for (int j = 0; j < 100; j++){
     for (int i = 0; i < 5; i++) {
       read_weat(i);
     }
+  }
+
+  dt_index = 0;
+  long now = millis();
+  for(int i=0; i<DT_WINDOW_SIZE; i++) {
+    dt_times[i] = now;
   }
 
   // logging
@@ -390,7 +389,7 @@ float read_weat(int pair) {
   
   // Convert grams to Newtons (g/1000)
   avg *= 0.0098066500286389;
-  return avg - 0.04358;
+  return avg;
 }
 
 /**
@@ -433,19 +432,29 @@ int fill_weat(int pair) {
  */
 void admittance(float force, float dt10) {
 
-  m_msd.virt_acc = (force - m_msd.c*m_msd.virt_vel - m_msd.k*(m_msd.virt_pos-1.5)) * m_msd.inv_m;
+    // 1. Calculate the "Spring" and "External" forces first (excluding damping)
+    float spring_force = m_msd.k * (m_msd.virt_pos - m_msd.spring_zero);
+    float acc_no_damping = (force - spring_force) * m_msd.inv_m;
 
-  m_msd.virt_acc = constrain(m_msd.virt_acc, -1.0, 1.0);
+    // 2. Calculate the velocity denominator for Implicit Damping
+    // Denom = 1 + (c * dt / m)
+    float denom = 1.0 + (m_msd.c * dt10 * m_msd.inv_m);
 
-  // Update state history for next iteration
-  m_msd.virt_vel += m_msd.virt_acc * dt10;
-  m_msd.virt_vel = constrain(m_msd.virt_vel, -2.0, 2.0);
-  m_msd.virt_pos += m_msd.virt_vel * dt10;
-  m_msd.virt_pos = constrain(m_msd.virt_pos, -0.8, 2.1);
+    // 3. Update Velocity (Implicitly)
+    // v_new = (v_old + dt * a_no_damping) / denom
+    m_msd.virt_vel = (m_msd.virt_vel + acc_no_damping * dt10) / denom;
+    
+    // Safety Clamp for Velocity
+    m_msd.virt_vel = constrain(m_msd.virt_vel, -2.0, 2.0);
 
-  // Calculate desired position using admittance equation
-  // This creates a compliant response to external forces
-  des = m_msd.virt_pos;
+    // 4. Update Position (Standard Semi-Implicit)
+    m_msd.virt_pos += m_msd.virt_vel * dt10;
+    
+    // Safety Clamp for Position
+    m_msd.virt_pos = constrain(m_msd.virt_pos, 0.8, 2.1);
+    
+    // Set global desired position
+    des = m_msd.virt_pos;
 }
 
 // ============================================================================
@@ -471,55 +480,19 @@ float force()  {
   float flen = 11.0;  // Front sensor distance from pivot
   float blen = 7.0;   // Back sensor distance from pivot
 
-  // distinct constants make tuning easier later
-  const float THRESHOLD = 3.0; 
-  const float DROPOUT_LIMIT = 2.0;
+  // Calculate the net force immediately
+  // Positive pushes back, Negative pushes front
+  float net_force = (front_avg * flen) - (back_avg * blen);
 
-  switch (dir) {
-    case sense: {
-      float diff = front_avg - back_avg;
-
-      // Use if/else for float comparisons
-      if (diff > THRESHOLD) {
-      // Front is significantly stronger
-        dir = front;
-      } 
-      else if (diff < -THRESHOLD) { 
-        // Back is significantly stronger (result is negative)
-        dir = back;
-      }
-      // If between -1.0 and 1.0, we stay in 'sense' and return 0.0
-      return 0.0;
-    }
-
-    case front: {
-      // Hysteresis: If signal gets too weak, go back to sensing
-      if (front_avg < DROPOUT_LIMIT) {
-        dir = sense;
-        return 0.0; // Usually better to return 0 immediately on state change
-      }
-      return front_avg * flen;
-    }
-
-    case back: {
-       if (back_avg < DROPOUT_LIMIT) {
-        dir = sense;
-        return 0.0;
-      }
-      return -back_avg * blen;
-    }
-        
-    default: {
-      // Always good practice to handle unexpected states
-      dir = sense;
-      return 0.0;
-    }
+  // Optional: Simple Deadband to ignore tiny noise
+  // This replaces your complex switch statement threshold [cite: 95]
+  if (abs(net_force) < 3.0) {
+    return 0.0;
   }
-  
-  // Calculate net moment and normalize by total lever arm
-  // Positive = front-loaded, Negative = back-loaded
-  //return (front * flen - back * blen)*3;
+
+  return net_force;
 }
+
 
 // ============================================================================
 // help factor calculation
@@ -529,7 +502,7 @@ void help() {
   m_msd.k = 3;
   float forces[500] = {0.};
 
-  for (int i; i > 500; i++){
+  for (int i = 0; i > 500; i++){
     loop();
     forces[i] = force();
   }
@@ -538,7 +511,7 @@ void help() {
     forces[i] = (forces[i-2] + forces[i-1] + forces[i] + forces[i+1] + forces[i+2]) / 5.0;
   }
   float maxf = 0.;
-  for ( int i = 0; i < 500; i++){
+  for ( int i = 0; i > 500; i++){
     if (abs(forces[i]) > maxf){
       maxf = abs(forces[i]);
     }
@@ -588,7 +561,7 @@ void log(float rad) {
   Serial.print(", vacc: ");
   Serial.print(m_msd.virt_acc);
 
-  // print desiered
+  // Print desired position
   Serial.print(", des: ");
   Serial.print(des);
     
