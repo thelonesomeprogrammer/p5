@@ -7,7 +7,7 @@
  * position tracking.
  */
 
-#define DT_WINDOW_SIZE 10
+#define DT_WINDOW_SIZE 5
 // ============================================================================
 // Data Structures
 // ============================================================================
@@ -67,6 +67,8 @@ typedef struct {
 // Global constants
 // ============================================================================
 const int dt_window_size = DT_WINDOW_SIZE;
+const float upper_lim = 3.25;
+const float lower_lim = 1.75;
 
 // Sensor configuration
 const int apins[] = {A1, A2, A3, A4, A5, A6, A7, A8, A9, A10};  // 10 analog pins for 5 sensor pairs
@@ -93,6 +95,7 @@ int speed;                      // Motor PWM speed command [-255, 255]
 int p;                          // Counter for periodic logging
 
 butter_t butter_force[5];
+butter_t butter_force_2;
 
 // Force sensor data
 int basefoot[] = {0, 0, 0, 0, 0};  // Baseline readings for 5 sensor pairs (tared values)
@@ -152,11 +155,13 @@ void setup() {
   // Initialize admittance controller parameters
   // These define the virtual mechanical impedance of the system
   m_msd.k = 0.04;                               // Low stiffness for compliant behavior
-  m_msd.c = 1000.0;                                      // Moderate damping
-  m_msd.inv_m = 1.0/100;                                     // Virtual inertia (inverse mass) 
+  m_msd.c = 0.5;                                      // Moderate damping
+  m_msd.inv_m = 1.0/0.005;                                     // Virtual inertia (inverse mass) 
   m_msd.virt_pos = analogRead(A0) * 0.007 + 0.1655;// Initialize with current position
   m_msd.virt_vel = 0.;                               // Start at rest
-  m_msd.spring_zero = 1.5;                     // Neutral spring position
+  m_msd.spring_zero = 2.5;                     // Neutral spring position
+
+  des = m_msd.virt_pos;
 
   // Tare force sensors - record baseline readings with no applied force
   // Fill moving average buffers with initial readings
@@ -169,18 +174,25 @@ void setup() {
   for (int i = 0; i < 5; i++) {
     basefoot[i] = fill_weat(i);
 
-    butter_force[i].b0 =  0.0000878299618;
-    butter_force[i].b1 =  0.0001756599240;
-    butter_force[i].b2 =  0.0000878299618;
-    butter_force[i].a1 = -1.97331757;
-    butter_force[i].a2 =  0.97366889;
+    butter_force[i].b0 =  0.00208460;
+    butter_force[i].b1 =  0.00416920;
+    butter_force[i].b2 =  0.00208460;
+    butter_force[i].a1 = -1.86675938;
+    butter_force[i].a2 =  0.87509779;
   }
+
+  butter_force_2.b0 =  0.00208460;
+  butter_force_2.b1 =  0.00416920;
+  butter_force_2.b2 =  0.00208460;
+  butter_force_2.a1 = -1.86675938;
+  butter_force_2.a2 =  0.87509779;
 
   // Warm up filter 
   for (int j = 0; j < 100; j++){
     for (int i = 0; i < 5; i++) {
       read_weat(i);
     }
+    butter_step(butter_force_2, m_msd.virt_pos);
   }
 
   dt_index = 0;
@@ -213,7 +225,10 @@ void loop() {
 
   // Convert ADC reading to physical position (radians)
   // Formula: position = read * 0.005 + 0.0565
-  float rad = read * 0.005 + 0.0565;
+  float rad = read * 0.007 + 0.1655;
+
+  rad = butter_step(&butter_force_2, rad);
+
 
   long t = millis();
   // Calculate time step over the full window (10 samples)
@@ -224,7 +239,7 @@ void loop() {
 
   // Calculate time step since last loop iteration
   // (dt_index + 9) % 10 gives the index of the most recent previous sample
-  float dt = (t - dt_times[(dt_index + 9) % 10])/1000.0;
+  float dt = (t - dt_times[(dt_index + dt_window_size - 1) % dt_window_size])/1000.0;
   
   dt_times[dt_index] = t;
 
@@ -240,18 +255,19 @@ void loop() {
 
   // Safety check: stop motor if position is out of valid range
   // Prevents damage if sensor disconnects or reaches mechanical limits
-  if (rad > 2.1 || rad < 0.80) {
+  if (rad > upper_lim || rad < lower_lim) {
     speed = 0;
     analogWrite(8, 0);
     analogWrite(9, 0);
     return;
   }
 
-  if (p % 10 == 2) {
+  if (p % dt_window_size == 0) {
 
     // Control cascade:
     // 1. Calculate net torque/force from sensor readings
     float f = force();
+    
     
     // 2. Admittance control: force -> desired position
     //    Virtual MSD system generates compliant response to external forces
@@ -451,7 +467,7 @@ void admittance(float force, float dt10) {
     m_msd.virt_pos += m_msd.virt_vel * dt10;
     
     // Safety Clamp for Position
-    m_msd.virt_pos = constrain(m_msd.virt_pos, 0.8, 2.1);
+    m_msd.virt_pos = constrain(m_msd.virt_pos, lower_lim, upper_lim);
     
     // Set global desired position
     des = m_msd.virt_pos;
@@ -476,21 +492,15 @@ float force()  {
   // Average force from back sensors (2 sensors)
   float back_avg = (newfoot[3] + newfoot[4]) * 0.5 * helpfactor;
 
-  // Moment arm lengths [cm]
-  float flen = 11.0;  // Front sensor distance from pivot
-  float blen = 7.0;   // Back sensor distance from pivot
+  // Moment arm lengths [m]
+  float flen = 0.11;  // Front sensor distance from pivot
+  float blen = 0.07;   // Back sensor distance from pivot
 
   // Calculate the net force immediately
   // Positive pushes back, Negative pushes front
   float net_force = (front_avg * flen) - (back_avg * blen);
 
-  // Optional: Simple Deadband to ignore tiny noise
-  // This replaces your complex switch statement threshold [cite: 95]
-  if (abs(net_force) < 3.0) {
-    return 0.0;
-  }
-
-  return net_force;
+  return net_force*2;
 }
 
 
@@ -558,8 +568,6 @@ void log(float rad) {
   Serial.print(m_msd.virt_pos);
   Serial.print(", vvel: ");
   Serial.print(m_msd.virt_vel);
-  Serial.print(", vacc: ");
-  Serial.print(m_msd.virt_acc);
 
   // Print desired position
   Serial.print(", des: ");
@@ -568,9 +576,6 @@ void log(float rad) {
   // Print position
   Serial.print(", rad: ");
   Serial.print(rad);
-
-  Serial.print(", dir: ");
-  Serial.print(dir);
     
   // Print final motor command
   Serial.print(", con: ");

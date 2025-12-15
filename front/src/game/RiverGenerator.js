@@ -13,7 +13,7 @@ export class RiverGenerator {
 
     // River properties with constraints
     this.riverWidth = {
-      min: options.minWidth || 2,
+      min: options.minWidth || 3,
       max: options.maxWidth || 6,
       current: options.initialWidth || 3
     };
@@ -29,6 +29,8 @@ export class RiverGenerator {
 
     // Width change parameters
     this.widthChangeChance = options.widthChangeChance || 0.05;
+    this.stepsSinceWidthChange = 0;
+    this.minWidthRun = options.minWidthRun || 3;
   }
 
   // Fixed probability distribution for drunken walk
@@ -88,15 +90,22 @@ export class RiverGenerator {
 
       // Occasionally vary width
       let newWidth = this.riverWidth.current;
-		if (direction != 0) {
-      if (Math.random() < this.widthChangeChance) {
-        const widthChange = Math.random() < 0.5 ? -1 : 1;
-        newWidth = Math.max(
-          this.riverWidth.min,
-          Math.min(this.riverWidth.max, newWidth + widthChange)
-        );
+      this.stepsSinceWidthChange++;
+
+      if (direction === 0 && this.stepsSinceWidthChange >= this.minWidthRun) {
+        if (Math.random() < this.widthChangeChance) {
+          const widthChange = Math.random() < 0.5 ? -1 : 1;
+          const proposedWidth = Math.max(
+            this.riverWidth.min,
+            Math.min(this.riverWidth.max, newWidth + widthChange)
+          );
+
+          if (proposedWidth !== newWidth) {
+            newWidth = proposedWidth;
+            this.stepsSinceWidthChange = 0;
+          }
+        }
       }
-		}
 
       const candidateSegment = {
         y,
@@ -145,6 +154,16 @@ export class RiverGenerator {
 
   // Generate river tiles for a specific Y coordinate
   generateRowAt(y) {
+    // Boundary check: No river before the start
+    if (y < 0) return [];
+
+    // Safety check: Don't regenerate segments that have dropped out of the history buffer.
+    // Regenerating them would use the CURRENT generator state (position/width), creating
+    // wildly incorrect segments and corrupting the generator's spatial continuity.
+    if (this.lastGeneratedY > -1 && y < (this.lastGeneratedY - this.pathSegments.capacity)) {
+      return [];
+    }
+
     // Check tile cache first
     if (this.tileCache.has(y)) {
       this.manageTileCache(y);
