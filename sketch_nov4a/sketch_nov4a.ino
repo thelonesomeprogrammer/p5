@@ -187,8 +187,8 @@ void setup() {
 
   // Initialize PID controller gains
   // Tuned for position tracking with reasonable response
-  pid.kp = 140;           // Proportional gain
-  pid.ki = 0.8 * pid.kp;  // Integral gain
+  pid.kp = 160;           // Proportional gain
+  pid.ki = 2.5 * pid.kp;  // Integral gain
   pid.kd = 0.2 * pid.kp;  // Derivative gain
   pid.integral = 0.0;     // Clear integral accumulator
 
@@ -321,7 +321,8 @@ void loop() {
   speed = constrain(speed, -60, 60);
   
   // Deadband to prevent motor buzzing/stalling at low speeds
-  if (speed > -17 && speed < 17) { speed = 0; }
+  if (speed >  5 && speed < 20) { speed = 20; }
+  if (speed <  -5 && speed > -20) { speed = -20; }
 
 
   // Apply motor command via H-bridge
@@ -461,7 +462,7 @@ float pid_step(float error, float dt, float odt) {
   pid.integral += error * dt;
 
   // Anti-windup: clamp integral to prevent excessive buildup
-  pid.integral = constrain(pid.integral, -0.2, 0.2);
+  pid.integral = constrain(pid.integral, -0.025, 0.025);
 
   // Calculate derivative (rate of change of error)
   // Note: Uses error from 10 samples ago (dt_window_size) to smooth out the derivative
@@ -633,45 +634,53 @@ void log() {
       Serial.print(last_log.rad);
       break;
     case 2:
-      Serial.print(", top1(N): ");
-      Serial.print(last_log.top1);
-      break;
-    case 3:
-      Serial.print(", top2(N): ");
-      Serial.print(last_log.top2);
-      break;
-    case 4:
-      Serial.print(", top3(N): ");
-      Serial.print(last_log.top3);
-      break;
-    case 5:
-      Serial.print(", bot1(N): ");
-      Serial.print(last_log.bot1);
-      break;
-    case 6:
-      Serial.print(", bot2(N): ");
-      Serial.print(last_log.bot2);
-      break;
-    case 7:
-      Serial.print(", f(NM): ");
-      Serial.print(last_log.f);
-      break;
-    case 8:
       Serial.print(", vpos(rad): ");
       Serial.print(last_log.virt_pos);
       break;
-    case 9:
-      Serial.print(", vvel(rad/s): ");
-      Serial.print(last_log.virt_vel);
-      break;
-    case 10:
-      Serial.print(", avg_loop(us): ");
-      Serial.print(last_log.avg_loop);
-      break;
-    case 11:
+    case 3:
       Serial.print(", control_out: ");
       Serial.print(last_log.control_out);
       break;
+    // case 2:
+    //   Serial.print(", top1(N): ");
+    //   Serial.print(last_log.top1);
+    //   break;
+    // case 3:
+    //   Serial.print(", top2(N): ");
+    //   Serial.print(last_log.top2);
+    //   break;
+    // case 4:
+    //   Serial.print(", top3(N): ");
+    //   Serial.print(last_log.top3);
+    //   break;
+    // case 5:
+    //   Serial.print(", bot1(N): ");
+    //   Serial.print(last_log.bot1);
+    //   break;
+    // case 6:
+    //   Serial.print(", bot2(N): ");
+    //   Serial.print(last_log.bot2);
+    //   break;
+    // case 7:
+    //   Serial.print(", f(NM): ");
+    //   Serial.print(last_log.f);
+    //   break;
+    // case 8:
+    //   Serial.print(", vpos(rad): ");
+    //   Serial.print(last_log.virt_pos);
+    //   break;
+    // case 9:
+    //   Serial.print(", vvel(rad/s): ");
+    //   Serial.print(last_log.virt_vel);
+    //   break;
+    // case 10:
+    //   Serial.print(", avg_loop(us): ");
+    //   Serial.print(last_log.avg_loop);
+    //   break;
+    // case 11:
+    //   Serial.print(", control_out: ");
+    //   Serial.print(last_log.control_out);
+    //   break;
     default:
       break;
   }
