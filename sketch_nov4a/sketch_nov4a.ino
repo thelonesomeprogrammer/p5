@@ -94,7 +94,7 @@ typedef struct {
   int buffer[MEDIAN_WINDOW_SIZE];  // Circular buffer for raw values
   int sorted[MEDIAN_WINDOW_SIZE];  // Buffer sorted for median extraction
   int idx;                         // Current write index
-  int window_size = MEDIAN_WINDOW_SIZE; // Size of the window
+  int window_size; // Size of the window
 } median_t;
 
 
@@ -192,7 +192,7 @@ void setup() {
   pid.kd = 0.2 * pid.kp;  // Derivative gain
   pid.integral = 0.0;     // Clear integral accumulator
 
-  for (int i = 0; i < 10; i++) {
+  for (int i = 0; i < dt_window_size; i++) {
     pid.last_errors[i] = 0.;  // Initialize error history
   }
 
@@ -219,6 +219,13 @@ void setup() {
   // Store baseline values
   for (int i = 0; i < 5; i++) {
     base_foot[i] = calibrate_fsr(i);
+    medians[i].idx = 0;
+    medians[i].window_size = MEDIAN_WINDOW_SIZE;
+    // Initialize median filter buffers
+    for (int j = 0; j < MEDIAN_WINDOW_SIZE; j++) {
+      medians[i].buffer[j] = base_foot[i];
+      medians[i].sorted[j] = base_foot[i];
+    }
   }
 
   filt_pos.b0 = 0.00761985;
@@ -400,7 +407,7 @@ float secfilt_step(secfilt_t* fil, float input) {
  * @param input  New raw input value
  * @return       Median value from the current window
  */
-float median_step(median_t* fil, float input) {
+float median_step(median_t* fil, int input) {
   // 1. Identify the old value we are about to overwrite
   int old = fil->buffer[fil->idx];
 
