@@ -56,20 +56,24 @@ typedef struct {
   float y2;  // Previous output (n-2)
 } secfilt_t;
 
+/**
+ * Log Data Structure
+ * Holds a snapshot of system state variables for periodic logging
+ */
 typedef struct {
-  unsigned long time;
-  float avg_loop;
-  float top1;
-  float top2;
-  float top3;
-  float bot1;
-  float bot2;
-  float virt_pos;
-  float virt_vel;
-  float rad;
-  float f;
-  int con;
-  int index;
+  unsigned long time; // Timestamp [ms]
+  float avg_loop;     // Average loop duration [us]
+  float top1;         // Force sensor reading 1 [N]
+  float top2;         // Force sensor reading 2 [N]
+  float top3;         // Force sensor reading 3 [N]
+  float bot1;         // Force sensor reading 4 [N]
+  float bot2;         // Force sensor reading 5 [N]
+  float virt_pos;     // Virtual position [rad]
+  float virt_vel;     // Virtual velocity [rad/s]
+  float rad;          // Actual position [rad]
+  float f;            // Net force [Nm]
+  int control_out;    // Motor control output (PWM)
+  int index;          // Serialization state index
 } log_t;
 
 /**
@@ -82,11 +86,15 @@ typedef struct {
 } exp_t;
 
 
+/**
+ * Median Filter Structure
+ * Implements a median filter using a sorted array approach for efficient outlier removal
+ */
 typedef struct {
-  int buffer[MEDIAN_WINDOW_SIZE];
-  int sorted[MEDIAN_WINDOW_SIZE];
-  int idx;
-  int window_size = MEDIAN_WINDOW_SIZE;
+  int buffer[MEDIAN_WINDOW_SIZE];  // Circular buffer for raw values
+  int sorted[MEDIAN_WINDOW_SIZE];  // Buffer sorted for median extraction
+  int idx;                         // Current write index
+  int window_size = MEDIAN_WINDOW_SIZE; // Size of the window
 } median_t;
 
 
@@ -115,13 +123,13 @@ int dt_index = 0;
 long loop_counter = 0;
 
 // Assist factor
-float helpfactor = 2.0;
+float help_factor = 2.0;
 
 // logging
 log_t last_log;
 
 // Controller instances
-admittance_t m_msd;  // Admittance controller (outer loop)
+admittance_t msd;  // Admittance controller (outer loop)
 pid_t pid;           // PID controller (inner loop)
 
 // System state variables
@@ -135,8 +143,8 @@ secfilt_t filt_pos;
 median_t medians[5];
 
 // Force sensor data
-int basefoot[] = { 0, 0, 0, 0, 0 };                 // Baseline readings for 5 sensor pairs (tared values)
-float newfoot[] = { 0.0, 0.0, 0.0, 0.0, 0.0 };      // Current force readings for 5 sensor pairs [N]
+int base_foot[] = { 0, 0, 0, 0, 0 };                 // Baseline readings for 5 sensor pairs (tared values)
+float new_foot[] = { 0.0, 0.0, 0.0, 0.0, 0.0 };      // Current force readings for 5 sensor pairs [N]
 
 // Moving average filter for force sensors
 long movavg_sum[5] = { 0 };  // Running sum for efficient average calculation
@@ -191,26 +199,26 @@ void setup() {
 
   // Initialize admittance controller parameters
   // These define the virtual mechanical impedance of the system
-  m_msd.k = 0.04;                                    // Low stiffness for compliant behavior
-  m_msd.c = 0.5;                                     // Moderate damping
-  m_msd.inv_m = 1.0 / 0.005;                         // Virtual inertia (inverse mass)
-  m_msd.virt_pos = analogRead(A0) * 0.007 + 0.1655;  // Initialize with current position
-  m_msd.virt_vel = 0.;                               // Start at rest
-  m_msd.spring_zero = 2.5;                           // Neutral spring position
-  m_msd.denom = 1.0 + (m_msd.c * dt10 * m_msd.inv_m);
+  msd.k = 0.04;                                    // Low stiffness for compliant behavior
+  msd.c = 0.5;                                     // Moderate damping
+  msd.inv_m = 1.0 / 0.005;                         // Virtual inertia (inverse mass)
+  msd.virt_pos = analogRead(A0) * 0.007 + 0.1655;  // Initialize with current position
+  msd.virt_vel = 0.;                               // Start at rest
+  msd.spring_zero = 2.5;                           // Neutral spring position
+  msd.denom = 1.0 + (msd.c * dt10 * msd.inv_m);    // pre-calculate denominator 
 
-  des = m_msd.virt_pos;
+  des = msd.virt_pos;
 
   // Tare force sensors - record baseline readings with no applied force
   // Fill moving average buffers with initial readings
   for (int i = 0; i < 10; i++) {
     for (int j = 0; j < 5; j++) {
-      fill_wheat(j);
+      calibrate_fsr(j);
     }
   }
   // Store baseline values
   for (int i = 0; i < 5; i++) {
-    basefoot[i] = fill_wheat(i);
+    base_foot[i] = calibrate_fsr(i);
   }
 
   filt_pos.b0 = 0.00761985;
@@ -230,13 +238,13 @@ void setup() {
   // Warm up filter
   for (int j = 0; j < 100; j++) {
     for (int i = 0; i < 5; i++) {
-      read_wheat(i);
+      read_fsr(i);
     }
     float f = force();
     secfilt_step(&filt_force, f);
-    secfilt_step(&filt_pos, m_msd.virt_pos);
+    secfilt_step(&filt_pos, msd.virt_pos);
   }
-  log(m_msd.virt_pos);
+  
 }
 
 // ============================================================================
@@ -273,12 +281,10 @@ void loop() {
 
   // Read all force sensors (5 pairs, 10 sensors total)
   for (int i = 0; i < 5; i++) {
-    newfoot[i] = read_wheat(i);
+    new_foot[i] = read_fsr(i);
   }
 
-  // Control cascade:
-  // 1. Calculate net torque/force from sensor readings
-
+  // Calculate net torque/force from sensor readings 
   float f = force();
   f = secfilt_step(&filt_force, f);
 
@@ -300,9 +306,9 @@ void loop() {
 
   if (loop_counter % dt_window_size == 0) {
 
-    // 2. Admittance control: force -> desired position
+    //    Admittance control: force -> desired position
     //    Virtual MSD system generates compliant response to external forces
-    admittance(f, dt10);
+    admittance_step(f, dt10);
   }
 
   float err = des - rad;
@@ -313,6 +319,8 @@ void loop() {
 
   // Limit motor speed to safe range
   speed = constrain(speed, -60, 60);
+  
+  // Deadband to prevent motor buzzing/stalling at low speeds
   if (speed > -17 && speed < 17) { speed = 0; }
 
 
@@ -360,6 +368,16 @@ float exp_step(exp_t* fil, float input) {
   return output;
 }
 
+/**
+ * Apply one step of the Second-order Filter (Biquad)
+ *
+ * Implements a Direct Form I structure for an IIR filter:
+ * y[n] = (b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]) / a0
+ *
+ * @param fil    Pointer to the filter state structure
+ * @param input  New raw input value
+ * @return       Filtered output value
+ */
 float secfilt_step(secfilt_t* fil, float input) {
   float output = (fil->b0 * input + fil->b1 * fil->x1 + fil->b2 * fil->x2 - fil->a1 * fil->y1 - fil->a2 * fil->y2) / fil->a0;
 
@@ -371,6 +389,16 @@ float secfilt_step(secfilt_t* fil, float input) {
   return output;
 }
 
+/**
+ * Apply one step of the Median Filter
+ *
+ * Maintains a sliding window of values and returns the median.
+ * Uses an optimized insertion sort approach on the rolling buffer.
+ *
+ * @param fil    Pointer to the filter state structure
+ * @param input  New raw input value
+ * @return       Median value from the current window
+ */
 float median_step(median_t* fil, float input) {
   // 1. Identify the old value we are about to overwrite
   int old = fil->buffer[fil->idx];
@@ -379,7 +407,7 @@ float median_step(median_t* fil, float input) {
   fil->buffer[fil->idx] = input;
   fil->idx = (fil->idx + 1) % fil->window_size;
 
-  // 3. OPTIMIZED UPDATE:
+  // 3. UPDATE SORTED:
   // Instead of re-sorting the whole array, we find the old value
   // in the sorted array, replace it with the new value, and re-sort just that element.
   int i;
@@ -413,15 +441,15 @@ float median_step(median_t* fil, float input) {
 
 
 // ============================================================================
-// PID Controller
+// Controller
 // ============================================================================
 
 /**
  * Execute one PID control step
  * 
- * @param m_pid  Pointer to PID controller structure
  * @param error  Position error (desired - actual)
  * @param dt     Time step in seconds
+ * @param odt    Inverse time step for derivative calculation (1/dt)
  * 
  * Implements the discrete PID equation:
  * u(t) = Kp*e(t) + Ki*∫e(τ)dτ + Kd*de(t)/dt
@@ -447,20 +475,51 @@ float pid_step(float error, float dt, float odt) {
   return pid.kp * error + pid.ki * pid.integral + pid.kd * derivative;
 }
 
+/**
+ * Execute Admittance Control Step
+ * 
+ * Calculates the desired position of the foot based on the measured force
+ * using a virtual Mass-Spring-Damper model.
+ * F = m*a + c*v + k*x  =>  a = (F - c*v - k*x) / m
+ * 
+ * @param force  Net force/torque acting on the foot
+ * @param dt10   Time step for integration
+ */
+void admittance_step(float force, float dt10) {
+
+  // 1. Calculate the "Spring" and "External" forces first (excluding damping)
+  float spring_force = msd.k * (msd.virt_pos - msd.spring_zero);
+  float acc_no_damping = (force - spring_force) * msd.inv_m;
+
+  // 2. Update Velocity (Implicitly)
+  // v_new = (v_old + dt * a_no_damping) / denom
+  msd.virt_vel = (msd.virt_vel + acc_no_damping * dt10) / msd.denom;
+
+  // Safety Clamp for Velocity
+  msd.virt_vel = constrain(msd.virt_vel, -2.0, 2.0);
+
+  // 3. Update Position (Standard Semi-Implicit)
+  msd.virt_pos += msd.virt_vel * dt10;
+
+  // Safety Clamp for Position
+  msd.virt_pos = constrain(msd.virt_pos, lower_lim + 0.5, upper_lim);
+
+  // Set global desired position
+  des = msd.virt_pos;
+}
+
+
 // ============================================================================
 // Force Sensor Reading
 // ============================================================================
 
 /**
- * Read and process force from a Wheatstone bridge sensor pair
- * 
- * Each "pair" consists of two Wheatstone bridge sensors in a differential
- * configuration. This provides better noise rejection and sensitivity.
+ * Read and process force from a Wheatstone bridge
  * 
  * @param pair  Sensor pair index (0-4)
  * @return      Filtered force reading in Newtons
  */
-float read_wheat(int pair) {
+float read_fsr(int pair) {
   // Read both sensors in the differential pair
   int read = analogRead(apins[pair * 2]);       // Left sensor
   int read2 = analogRead(apins[pair * 2 + 1]);  // Right sensor
@@ -468,25 +527,25 @@ float read_wheat(int pair) {
   int pN = read - read2;
   int s = -12 * pN + 5582;
   // Subtract baseline (tare) to get relative force
-  int current = s - basefoot[pair];
+  int current = s - base_foot[pair];
   int clean = median_step(&medians[pair], current);
   float avg = clean;  // Return filtered average
 
-  // Convert grams to Newtons (g/1000)
+  // Convert grams to Newtons
   avg *= 0.0098066500286389;
   return avg;
 }
 
 /**
- * Calibrate/Tare a Wheatstone bridge sensor pair
+ * Calibrate/Tare a Wheatstone bridge
  * 
- * Reads the sensor pair and updates a running average to establish
+ * Reads the pin pair and updates a running average to establish
  * the baseline zero-force value.
  * 
  * @param pair  Sensor pair index (0-4)
  * @return      Current average baseline value
  */
-int fill_wheat(int pair) {
+int calibrate_fsr(int pair) {
   // Read both sensors in the differential pair
   int read = analogRead(apins[pair * 2]);       // Left sensor
   int read2 = analogRead(apins[pair * 2 + 1]);  // Right sensor
@@ -501,69 +560,28 @@ int fill_wheat(int pair) {
   return -12 * avg + 5582;
 }
 
-// ============================================================================
-// Admittance Controller
-// ============================================================================
-
-/**
- * Execute Admittance Control Step
- * 
- * Calculates the desired position of the foot based on the measured force
- * using a virtual Mass-Spring-Damper model.
- * F = m*a + c*v + k*x  =>  a = (F - c*v - k*x) / m
- * 
- * @param force  Net force/torque acting on the foot
- * @param dt10   Time step for integration
- */
-void admittance(float force, float dt10) {
-
-  // 1. Calculate the "Spring" and "External" forces first (excluding damping)
-  float spring_force = m_msd.k * (m_msd.virt_pos - m_msd.spring_zero);
-  float acc_no_damping = (force - spring_force) * m_msd.inv_m;
-
-  // 3. Update Velocity (Implicitly)
-  // v_new = (v_old + dt * a_no_damping) / denom
-  m_msd.virt_vel = (m_msd.virt_vel + acc_no_damping * dt10) / m_msd.denom;
-
-  // Safety Clamp for Velocity
-  m_msd.virt_vel = constrain(m_msd.virt_vel, -2.0, 2.0);
-
-  // 4. Update Position (Standard Semi-Implicit)
-  m_msd.virt_pos += m_msd.virt_vel * dt10;
-
-  // Safety Clamp for Position
-  m_msd.virt_pos = constrain(m_msd.virt_pos, lower_lim + 0.5, upper_lim);
-
-  // Set global desired position
-  des = m_msd.virt_pos;
-}
-
-// ============================================================================
-// Force Calculation
-// ============================================================================
-
 /**
  * Calculate net torque/force from all sensors
  * 
  * Computes a weighted moment about the foot's pivot point.
  * Front sensors (0-2) and back sensors (3-4) create opposing torques.
  * 
- * @return  Net torque or normalized force
+ * @return  Net torque [Nm]
  */
 float force() {
   // Average force from front sensors (3 sensors)
-  float top_avg = (newfoot[0] + newfoot[1] + newfoot[2]) * 0.33 * helpfactor;
+  float top_avg = (new_foot[0] + new_foot[1] + new_foot[2]) * 0.33 * help_factor;
 
   // Average force from back sensors (2 sensors)
-  float bot_avg = (newfoot[3] + newfoot[4]) * 0.5 * helpfactor;
+  float bot_avg = (new_foot[3] + new_foot[4]) * 0.5 * help_factor;
 
   // Moment arm lengths [m]
-  float tlen = 0.11;  // Front sensor distance from pivot
-  float blen = 0.07;  // Back sensor distance from pivot
+  float len_top = 0.11;  // Front sensor distance from pivot
+  float len_bot = 0.07;  // Back sensor distance from pivot
 
   // Calculate the net force immediately
   // Positive pushes back, Negative pushes front
-  float net_force = (top_avg * tlen) - (bot_avg * blen);
+  float net_force = (top_avg * len_top) - (bot_avg * len_bot);
 
   return net_force;
 }
@@ -574,29 +592,36 @@ float force() {
 // ============================================================================
 
 /**
- * Periodically log system state for debugging and tuning
- * 
- * Prints every ~500 loop iterations to avoid overwhelming serial buffer
- * 
- * @param output  Admittance controller output
- * @param rad    Current position [rad]
+ * Capture system state for logging
+ *
+ * Stores the current state variables into the global log structure.
+ * This snapshots the data so it can be printed incrementally.
+ *
+ * @param rad  Current position [rad]
+ * @param f    Calculated net force/torque [Nm]
  */
 void capture_log(float rad, float f) {
   last_log.time = millis();
   last_log.avg_loop = (millis() * 1000.0) / (loop_counter);
-  last_log.top1 = newfoot[0];
-  last_log.top2 = newfoot[1];
-  last_log.top3 = newfoot[2];
-  last_log.bot1 = newfoot[3];
-  last_log.bot2 = newfoot[4];
-  last_log.virt_pos = m_msd.virt_pos;
-  last_log.virt_vel = m_msd.virt_vel;
+  last_log.top1 = new_foot[0];
+  last_log.top2 = new_foot[1];
+  last_log.top3 = new_foot[2];
+  last_log.bot1 = new_foot[3];
+  last_log.bot2 = new_foot[4];
+  last_log.virt_pos = msd.virt_pos;
+  last_log.virt_vel = msd.virt_vel;
   last_log.rad = rad;
-  last_log.con = speed;
+  last_log.control_out = speed;
   last_log.f = f;
   last_log.index = 0;
 }
 
+/**
+ * Print one field of the log entry
+ *
+ * To minimize loop blocking, this function prints only one data field per call.
+ * It cycles through the fields based on last_log.index.
+ */
 void log() {
   switch (last_log.index) {
     case 0:
@@ -643,9 +668,9 @@ void log() {
       Serial.print(", avg_loop(us): ");
       Serial.print(last_log.avg_loop);
       break;
-    case 12:
-      Serial.print(", con: ");
-      Serial.print(last_log.con);
+    case 11:
+      Serial.print(", control_out: ");
+      Serial.print(last_log.control_out);
       break;
     default:
       break;
