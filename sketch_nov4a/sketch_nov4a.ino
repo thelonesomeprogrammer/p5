@@ -8,6 +8,7 @@
  */
 
 #define DT_WINDOW_SIZE 5
+#define MEDIAN_WINDOW_SIZE 5
 // ============================================================================
 // Data Structures
 // ============================================================================
@@ -39,20 +40,21 @@ typedef struct {
 } admittance_t;
 
 /**
- * Second-order Butterworth Filter Structure
+ * Second-order Filter Structure
  * Used for low-pass filtering force sensor readings to remove noise
  */
 typedef struct {
   float b0;
   float b1;
   float b2;
+  float a0;
   float a1;
   float a2;
   float x1;  // Previous input (n-1)
   float x2;  // Previous input (n-2)
   float y1;  // Previous output (n-1)
   float y2;  // Previous output (n-2)
-} butter_t;
+} secfilt_t;
 
 typedef struct {
   unsigned long time;
@@ -60,12 +62,12 @@ typedef struct {
   float top1;
   float top2;
   float top3;
-  float but1;
-  float but2;
-  float vpos;
-  float vvel;
-  float des;
+  float bot1;
+  float bot2;
+  float virt_pos;
+  float virt_vel;
   float rad;
+  float f;
   int con;
   int index;
 } log_t;
@@ -80,6 +82,14 @@ typedef struct {
 } exp_t;
 
 
+typedef struct {
+  int buffer[MEDIAN_WINDOW_SIZE];
+  int sorted[MEDIAN_WINDOW_SIZE];
+  int idx;
+  int window_size = MEDIAN_WINDOW_SIZE;
+} median_t;
+
+
 // ============================================================================
 // Global constants
 // ============================================================================
@@ -91,15 +101,12 @@ const float dt = LOOP_INTERVAL_US / 1e6;  // Loop time step in seconds
 const float dt10 = dt * dt_window_size;   // Time step for admittance and PID derivative
 const float odt10 = 1.0 / dt10;           // Inverse of dt10 for efficiency
 
-
 // Sensor configuration
 const int apins[] = { A1, A2, A3, A4, A5, A6, A7, A8, A9, A10 };  // 10 analog pins for 5 sensor pairs
 
 // ============================================================================
 // Global Variables
 // ============================================================================
-
-
 
 // Time tracking
 unsigned long previous_micros = 0;
@@ -120,17 +127,19 @@ pid_t pid;           // PID controller (inner loop)
 // System state variables
 float des;  // Desired position
 int speed;  // Motor PWM speed command [-255, 255]
-int p;      // Counter for periodic logging
 
-butter_t butter_force[5];
-butter_t butter_pos;
+secfilt_t filt_force;
+secfilt_t filt_pos;
+
+
+median_t medians[5];
 
 // Force sensor data
-int basefoot[] = { 0, 0, 0, 0, 0 };             // Baseline readings for 5 sensor pairs (tared values)
-float newfoot[] = { 0.0, 0.0, 0.0, 0.0, 0.0 };  // Current force readings for 5 sensor pairs [N]
+int basefoot[] = { 0, 0, 0, 0, 0 };                 // Baseline readings for 5 sensor pairs (tared values)
+float newfoot[] = { 0.0, 0.0, 0.0, 0.0, 0.0 };      // Current force readings for 5 sensor pairs [N]
 
 // Moving average filter for force sensors
-long moveavg_sum[5] = { 0 };  // Running sum for efficient average calculation
+long movavg_sum[5] = { 0 };  // Running sum for efficient average calculation
 int movavg_vals[5] = { 0 };
 
 
@@ -196,37 +205,37 @@ void setup() {
   // Fill moving average buffers with initial readings
   for (int i = 0; i < 10; i++) {
     for (int j = 0; j < 5; j++) {
-      fill_weat(j);
+      fill_wheat(j);
     }
   }
   // Store baseline values
   for (int i = 0; i < 5; i++) {
-    basefoot[i] = fill_weat(i);
-
-
-    butter_force[i].b0 = 0.00024136;
-    butter_force[i].b1 = 0.00048272;
-    butter_force[i].b2 = 0.00024136;
-    butter_force[i].a1 = -1.95557824;
-    butter_force[i].a2 = 0.95654368;
+    basefoot[i] = fill_wheat(i);
   }
 
-  butter_pos.b0 = 0.00146032;
-  butter_pos.b1 = 0.00292063;
-  butter_pos.b2 = 0.00146032;
-  butter_pos.a1 = -1.88903308;
-  butter_pos.a2 = 0.89487434;
+  filt_pos.b0 = 0.00761985;
+  filt_pos.b1 = 0.0152397;
+  filt_pos.b2 = 0.00761985;
+  filt_pos.a0 = 1.0;
+  filt_pos.a1 = -1.69028083;
+  filt_pos.a2 = 0.72076023;
+
+  filt_force.b0 = 0.00144327;
+  filt_force.b1 = 0.00288653;
+  filt_force.b2 = 0.00144327;
+  filt_force.a0 = 1.0;
+  filt_force.a1 = -1.86697805;
+  filt_force.a2 = 0.87275111;
 
   // Warm up filter
   for (int j = 0; j < 100; j++) {
     for (int i = 0; i < 5; i++) {
-      read_weat(i);
+      read_wheat(i);
     }
-    butter_step(&butter_pos, m_msd.virt_pos);
+    float f = force();
+    secfilt_step(&filt_force, f);
+    secfilt_step(&filt_pos, m_msd.virt_pos);
   }
-
-  // logging
-  p = 0;
   log(m_msd.virt_pos);
 }
 
@@ -253,7 +262,6 @@ void loop() {
 
   previous_micros += LOOP_INTERVAL_US;
 
-  p++;
   // Read current position from potentiometer/encoder
   int read = analogRead(A0);
 
@@ -261,17 +269,24 @@ void loop() {
   // Formula: position = read * 0.005 + 0.0565
   float rad = read * 0.007 + 0.1655;
 
-  rad = butter_step(&butter_pos, rad);
+  rad = secfilt_step(&filt_pos, rad);
 
   // Read all force sensors (5 pairs, 10 sensors total)
   for (int i = 0; i < 5; i++) {
-    newfoot[i] = read_weat(i);
+    newfoot[i] = read_wheat(i);
   }
 
-  if (p % 51 == 0) {
+  // Control cascade:
+  // 1. Calculate net torque/force from sensor readings
+
+  float f = force();
+  f = secfilt_step(&filt_force, f);
+
+
+  if (loop_counter % 50 == 0) {
     // capture logs every ~125ms
     Serial.println();
-    capture_log(rad);
+    capture_log(rad, f);
   }
 
   // Safety check: stop motor if position is out of valid range
@@ -283,12 +298,7 @@ void loop() {
     return;
   }
 
-  if (p % dt_window_size == 0) {
-
-    // Control cascade:
-    // 1. Calculate net torque/force from sensor readings
-    float f = force();
-
+  if (loop_counter % dt_window_size == 0) {
 
     // 2. Admittance control: force -> desired position
     //    Virtual MSD system generates compliant response to external forces
@@ -299,7 +309,7 @@ void loop() {
 
   // 3. PID control: position error -> motor command
   //    Tracks the desired position
-  speed = pidstep(err, dt, odt10);
+  speed = pid_step(err, dt, odt10);
 
   // Limit motor speed to safe range
   speed = constrain(speed, -60, 60);
@@ -323,7 +333,6 @@ void loop() {
   }
 
   dt_index = (dt_index + 1) % dt_window_size;
-  if (p == 100) { p = 0; }
 
   loop_counter++;
 
@@ -337,23 +346,6 @@ void loop() {
 // Filters
 // ============================================================================
 
-/**
- * Apply one step of the Second-Order Butterworth Filter
- * 
- * @param butter Pointer to the filter state structure
- * @param input  New raw input value
- * @return       Filtered output value
- */
-float butter_step(butter_t* butter, float input) {
-  float output = butter->b0 * input + butter->b1 * butter->x1 + butter->b2 * butter->x2 - butter->a1 * butter->y1 - butter->a2 * butter->y2;
-
-  butter->x2 = butter->x1;
-  butter->x1 = input;
-  butter->y2 = butter->y1;
-  butter->y1 = output;
-
-  return output;
-}
 
 /**
  * Apply one step of the Exponential Moving Average Filter
@@ -368,7 +360,56 @@ float exp_step(exp_t* fil, float input) {
   return output;
 }
 
+float secfilt_step(secfilt_t* fil, float input) {
+  float output = (fil->b0 * input + fil->b1 * fil->x1 + fil->b2 * fil->x2 - fil->a1 * fil->y1 - fil->a2 * fil->y2) / fil->a0;
 
+  fil->x2 = fil->x1;
+  fil->x1 = input;
+  fil->y2 = fil->y1;
+  fil->y1 = output;
+
+  return output;
+}
+
+float median_step(median_t* fil, float input) {
+  // 1. Identify the old value we are about to overwrite
+  int old = fil->buffer[fil->idx];
+
+  // 2. Overwrite it in the circular buffer
+  fil->buffer[fil->idx] = input;
+  fil->idx = (fil->idx + 1) % fil->window_size;
+
+  // 3. OPTIMIZED UPDATE:
+  // Instead of re-sorting the whole array, we find the old value
+  // in the sorted array, replace it with the new value, and re-sort just that element.
+  int i;
+  // Find old value in sorted array
+  for (i = 0; i < fil->window_size; i++) {
+    if (fil->sorted[i] == old) break;
+  }
+
+  // Replace with new value
+  fil->sorted[i] = input;
+
+  // Bubble this single new value to its correct position
+  // Move right if larger
+  while (i < fil->window_size - 1 && fil->sorted[i] > fil->sorted[i + 1]) {
+    int temp = fil->sorted[i];
+    fil->sorted[i] = fil->sorted[i + 1];
+    fil->sorted[i + 1] = temp;
+    i++;
+  }
+  // Move left if smaller
+  while (i > 0 && fil->sorted[i] < fil->sorted[i - 1]) {
+    int temp = fil->sorted[i];
+    fil->sorted[i] = fil->sorted[i - 1];
+    fil->sorted[i - 1] = temp;
+    i--;
+  }
+
+  // 4. Return the middle element
+  return fil->sorted[fil->window_size / 2];
+}
 
 
 // ============================================================================
@@ -387,7 +428,7 @@ float exp_step(exp_t* fil, float input) {
  *
  * @return       Control output (motor command)
  */
-float pidstep(float error, float dt, float odt) {
+float pid_step(float error, float dt, float odt) {
   // Integrate error over time
   pid.integral += error * dt;
 
@@ -419,7 +460,7 @@ float pidstep(float error, float dt, float odt) {
  * @param pair  Sensor pair index (0-4)
  * @return      Filtered force reading in Newtons
  */
-float read_weat(int pair) {
+float read_wheat(int pair) {
   // Read both sensors in the differential pair
   int read = analogRead(apins[pair * 2]);       // Left sensor
   int read2 = analogRead(apins[pair * 2 + 1]);  // Right sensor
@@ -428,8 +469,8 @@ float read_weat(int pair) {
   int s = -12 * pN + 5582;
   // Subtract baseline (tare) to get relative force
   int current = s - basefoot[pair];
-  float avg = current;  // Return filtered average
-  avg = butter_step(&butter_force[pair], avg);
+  int clean = median_step(&medians[pair], current);
+  float avg = clean;  // Return filtered average
 
   // Convert grams to Newtons (g/1000)
   avg *= 0.0098066500286389;
@@ -445,18 +486,18 @@ float read_weat(int pair) {
  * @param pair  Sensor pair index (0-4)
  * @return      Current average baseline value
  */
-int fill_weat(int pair) {
+int fill_wheat(int pair) {
   // Read both sensors in the differential pair
   int read = analogRead(apins[pair * 2]);       // Left sensor
   int read2 = analogRead(apins[pair * 2 + 1]);  // Right sensor
 
   int pN = read - read2;
 
-  moveavg_sum[pair] += pN;
+  movavg_sum[pair] += pN;
   movavg_vals[pair] += 1;
 
 
-  int avg = moveavg_sum[pair] / movavg_vals[pair];
+  int avg = movavg_sum[pair] / movavg_vals[pair];
   return -12 * avg + 5582;
 }
 
@@ -491,7 +532,7 @@ void admittance(float force, float dt10) {
   m_msd.virt_pos += m_msd.virt_vel * dt10;
 
   // Safety Clamp for Position
-  m_msd.virt_pos = constrain(m_msd.virt_pos, lower_lim, upper_lim);
+  m_msd.virt_pos = constrain(m_msd.virt_pos, lower_lim + 0.5, upper_lim);
 
   // Set global desired position
   des = m_msd.virt_pos;
@@ -511,18 +552,18 @@ void admittance(float force, float dt10) {
  */
 float force() {
   // Average force from front sensors (3 sensors)
-  float front_avg = (newfoot[0] + newfoot[1] + newfoot[2]) * 0.33 * helpfactor;
+  float top_avg = (newfoot[0] + newfoot[1] + newfoot[2]) * 0.33 * helpfactor;
 
   // Average force from back sensors (2 sensors)
-  float back_avg = (newfoot[3] + newfoot[4]) * 0.5 * helpfactor;
+  float bot_avg = (newfoot[3] + newfoot[4]) * 0.5 * helpfactor;
 
   // Moment arm lengths [m]
-  float flen = 0.11;  // Front sensor distance from pivot
+  float tlen = 0.11;  // Front sensor distance from pivot
   float blen = 0.07;  // Back sensor distance from pivot
 
   // Calculate the net force immediately
   // Positive pushes back, Negative pushes front
-  float net_force = (front_avg * flen) - (back_avg * blen);
+  float net_force = (top_avg * tlen) - (bot_avg * blen);
 
   return net_force;
 }
@@ -540,19 +581,19 @@ float force() {
  * @param output  Admittance controller output
  * @param rad    Current position [rad]
  */
-void capture_log(float rad) {
+void capture_log(float rad, float f) {
   last_log.time = millis();
   last_log.avg_loop = (millis() * 1000.0) / (loop_counter);
   last_log.top1 = newfoot[0];
   last_log.top2 = newfoot[1];
   last_log.top3 = newfoot[2];
-  last_log.but1 = newfoot[3];
-  last_log.but2 = newfoot[4];
-  last_log.vpos = m_msd.virt_pos;
-  last_log.vvel = m_msd.virt_vel;
-  last_log.des = des;
+  last_log.bot1 = newfoot[3];
+  last_log.bot2 = newfoot[4];
+  last_log.virt_pos = m_msd.virt_pos;
+  last_log.virt_vel = m_msd.virt_vel;
   last_log.rad = rad;
   last_log.con = speed;
+  last_log.f = f;
   last_log.index = 0;
 }
 
@@ -563,8 +604,8 @@ void log() {
       Serial.print(last_log.time);
       break;
     case 1:
-      Serial.print(", avg_loop(us): ");
-      Serial.print(last_log.avg_loop);
+      Serial.print(", rad(rad): ");
+      Serial.print(last_log.rad);
       break;
     case 2:
       Serial.print(", top1(N): ");
@@ -579,30 +620,30 @@ void log() {
       Serial.print(last_log.top3);
       break;
     case 5:
-      Serial.print(", but1(N): ");
-      Serial.print(last_log.but1);
+      Serial.print(", bot1(N): ");
+      Serial.print(last_log.bot1);
       break;
     case 6:
-      Serial.print(", but2(N): ");
-      Serial.print(last_log.but2);
+      Serial.print(", bot2(N): ");
+      Serial.print(last_log.bot2);
       break;
     case 7:
-      Serial.print(", vpos(rad): ");
-      Serial.print(last_log.vpos);
+      Serial.print(", f(NM): ");
+      Serial.print(last_log.f);
       break;
     case 8:
-      Serial.print(", vvel(rad/s): ");
-      Serial.print(last_log.vvel);
+      Serial.print(", vpos(rad): ");
+      Serial.print(last_log.virt_pos);
       break;
     case 9:
-      Serial.print(", des(rad): ");
-      Serial.print(last_log.des);
+      Serial.print(", vvel(rad/s): ");
+      Serial.print(last_log.virt_vel);
       break;
     case 10:
-      Serial.print(", rad(rad): ");
-      Serial.print(last_log.rad);
+      Serial.print(", avg_loop(us): ");
+      Serial.print(last_log.avg_loop);
       break;
-    case 11:
+    case 12:
       Serial.print(", con: ");
       Serial.print(last_log.con);
       break;
